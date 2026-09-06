@@ -365,15 +365,15 @@ func SendNotifySubStoreAssets(frontendUpdated bool, frontendVer string, backendU
 		return
 	}
 
-	title := "🧩 Sub-Store 资源更新"
+	title := "🧩 Subs-Check-Pro 资源更新"
 	var lines []string
 
 	// 动态拼接消息体，使用语义化 Emoji 替代重复的 ✅
 	if frontendUpdated {
-		lines = append(lines, "🌐 前端："+frontendVer)
+		lines = append(lines, "🌐 Sub-Store 前端："+frontendVer)
 	}
 	if backendUpdated {
-		lines = append(lines, "⚙️ 后端："+backendVer)
+		lines = append(lines, "⚙️ Sub-Store 后端："+backendVer)
 	}
 
 	lines = append(lines, "🕒 "+GetCurrentTime())
@@ -386,8 +386,8 @@ func SendNotifySubStoreAssets(frontendUpdated bool, frontendVer string, backendU
 
 // SendNotifyGeoDBUpdate 发送 GeoDB 更新通知
 func SendNotifyGeoDBUpdate(version string) {
-	title := "🌍 MaxMind GeoDB 更新"
-	body := "📍 已更新到：" + version +
+	title := "🧩 Subs-Check-Pro 资源更新"
+	body := "🌍 MMDB 数据库：" + version +
 		"  \n🕒 " + GetCurrentTime()
 
 	broadcastNotify(NotifyGeoDBUpdate, title, body, "")
@@ -395,7 +395,7 @@ func SendNotifyGeoDBUpdate(version string) {
 
 // SendNotifySelfUpdate 发送程序自更新通知
 func SendNotifySelfUpdate(current, latest string) {
-	title := "📦 subs-check-pro 自动更新"
+	title := "📦 Subs-Check-Pro 自动更新"
 	body := "✅ " + current + " -> " + latest +
 		"  \n🕒 " + GetCurrentTime()
 
@@ -404,7 +404,7 @@ func SendNotifySelfUpdate(current, latest string) {
 
 // SendNotifyDetectLatestRelease 发送新版本通知
 func SendNotifyDetectLatestRelease(current, latest string, isDocker, isGUI bool, downloadURL string) {
-	title := "📦 subs-check-pro 有新版本"
+	title := "📦 Subs-Check-Pro 有新版本"
 	var body string
 
 	switch {
@@ -430,7 +430,7 @@ func SendNotifyDetectLatestRelease(current, latest string, isDocker, isGUI bool,
 
 // SendNotifyTestTo 向指定渠道列表发送测试通知
 func SendNotifyTestTo(recipients []string) []NotifyTestResult {
-	title := "🎉 Subs Check PRO 通知测试"
+	title := "🎉 Subs-Check-Pro 通知测试"
 	body := "✅ 通知渠道配置正确！恭喜！\n🔗 可查看 [Apprise_Vercel](https://github.com/sinspired/apprise_vercel) 部署自己的通知服务  \n🕒 " + GetCurrentTime()
 	proxies := buildProxyList()
 
