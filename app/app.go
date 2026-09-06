@@ -47,6 +47,7 @@ type App struct {
 	// updateCron 版本更新定时任务调度器，独立存储以便 SetupUpdateTasks 重调时先停止旧实例，
 	// 避免每次配置变更触发重建时 goroutine 持续累积。
 	updateCron    *cron.Cron
+	updateMu      sync.Mutex
 	version       string
 	originVersion string
 	latestVersion string
@@ -198,23 +199,7 @@ func (app *App) Initialize() error {
 	// 设置信号处理器
 	app.stopCh = utils.SetupSignalHandler(&check.ForceClose, &app.checking)
 
-	// 每周五 12 点自动更新 GeoLite2 数据库
-	weeklyCron := cron.New()
-	_, err := weeklyCron.AddFunc("0 12 * * 5", func() {
-		if !app.checking.Load() {
-			slog.Info("更新 GeoLite2 数据库...")
-			if err := assets.UpdateGeoLite2DB(); err != nil {
-				slog.Error("更新 GeoLite2 数据库失败", "error", err)
-			}
-		}
-	})
-	if err != nil {
-		slog.Error("注册 GeoLite2 数据库更新任务失败", "error", err)
-	} else {
-		weeklyCron.Start()
-	}
-
-	// 检测版本更新
+	// 添加主程序版本更新和maxmind数据，sub-store前后端资源更新
 	app.SetupUpdateTasks()
 
 	return nil
@@ -272,6 +257,19 @@ func (app *App) GetConfigPath() string {
 	return app.configPath
 }
 
+// formatNextRunTime 统一格式化下一次运行时间
+func (app *App) formatNextRunTime(next time.Time, loc *time.Location) string {
+	if next.IsZero() {
+		return "未计划"
+	}
+	zoneName, offset := next.Zone()
+	return fmt.Sprintf("%s %s UTC%+d",
+		next.In(loc).Format("2006-01-02 15:04:05"),
+		zoneName,
+		offset/3600,
+	)
+}
+
 // setTimer 根据配置设置定时器
 func (app *App) setTimer() {
 	// 停止现有定时器
@@ -298,28 +296,14 @@ func (app *App) setTimer() {
 		})
 		if err != nil {
 			app.cron.Stop()
-			slog.Error(
-				"cron 表达式 '" +
-					config.GlobalConfig.CronExpression +
-					"' 解析失败: " +
-					err.Error() +
-					"，将使用检测间隔时间",
-			)
-
+			slog.Error("cron 表达式 '" + config.GlobalConfig.CronExpression + "' 解析失败: " + err.Error() + "，将使用检测间隔时间")
 			// 使用间隔时间
 			app.useIntervalTimer()
 		} else {
 			app.cron.Start()
 			for _, entry := range app.cron.Entries() {
 				if entry.Valid() && !entry.Next.IsZero() {
-					zoneName, offset := entry.Next.Zone()
-					slog.Warn("激活 cron 检测任务",
-						"next", fmt.Sprintf("%s %s UTC%+d",
-							entry.Next.In(app.cron.Location()).Format("2006-01-02 15:04:05"),
-							zoneName,
-							offset/3600,
-						),
-					)
+					slog.Warn("激活 cron 检测任务", "next", app.formatNextRunTime(entry.Next, app.cron.Location()))
 				}
 			}
 		}
@@ -376,13 +360,12 @@ func (app *App) triggerCheck() {
 		// 使用间隔时间模式
 		app.ticker.Reset(time.Duration(app.interval) * time.Minute)
 		nextCheck := time.Now().Add(time.Duration(app.interval) * time.Minute)
-		slog.Info("下次检测时间", "time", nextCheck.Format("2006-01-02 15:04:05"))
+		slog.Info("下次检测时间", "time", app.formatNextRunTime(nextCheck, time.Local))
 	} else if app.cron != nil {
 		// 使用cron模式
 		entries := app.cron.Entries()
 		if len(entries) > 0 {
-			nextTime := entries[0].Next
-			slog.Info("下次检测时间", "time", nextTime.Format("2006-01-02 15:04:05"))
+			slog.Info("下次检测时间", "time", app.formatNextRunTime(entries[0].Next, app.cron.Location()))
 		}
 	}
 	debug.FreeOSMemory()
@@ -597,14 +580,14 @@ func (app *App) SetupUpdateTasks() {
 	cronCheckUpdate := config.GlobalConfig.CronCheckUpdate
 
 	StartFromGUI := os.Getenv("START_FROM_GUI") != ""
-	isDocker := isDocker()
+	isDockerEnv := isDocker()
 
-	if isDocker {
-		slog.Info("检测到运行在 Docker 容器中,不执行自动更新")
+	if isDockerEnv {
+		slog.Info("检测到运行在 Docker 容器中, 不执行主程序自动更新")
 	}
 
-	// 程序启动时更新
-	if !StartFromGUI && enableSelfUpdate && updateOnStartup && !isDocker {
+	// 1. 程序启动时触发检测更新
+	if !StartFromGUI && enableSelfUpdate && updateOnStartup && !isDockerEnv {
 		updateDone := make(chan struct{})
 		go func() {
 			app.CheckUpdateAndRestart(false) // 启动时使用 false
@@ -616,31 +599,47 @@ func (app *App) SetupUpdateTasks() {
 		go func() {
 			_, _, err := app.detectLatestRelease()
 			if err != nil {
-				slog.Warn("检测更新错误", "error", err)
+				slog.Warn("检测主程序更新错误", "error", err)
 			}
 			close(detectDone)
 		}()
 		<-detectDone
 	}
 
-	// 设置定时更新任务
+	// 开始注册 Cron 任务
+	app.updateCron = cron.New()
+
+	// 定义用于存储任务 ID 的变量，以便任务完成后反查下一次执行时间
+	var idSelfUpdate, idGeoDB, idSubStore cron.EntryID
+	var err error
+
+	// 任务 A：主程序检测/自动更新
 	schedule := cronCheckUpdate
 	if schedule == "" {
-		// 默认每周五 12 点
-		schedule = "0 12 * * 5"
+		schedule = "0 12 * * 5" // 默认每周五 12 点
 	}
-
 	if enableSelfUpdate {
-		slog.Debug("程序将定时更新并重启", "schedule", schedule)
+		slog.Debug("主程序将定时更新并重启", "schedule", schedule)
 	} else {
-		slog.Debug("程序将定时检测新版本(不自动更新)", "schedule", schedule)
+		slog.Debug("主程序将定时检测新版本(不自动更新)", "schedule", schedule)
 	}
 
-	app.updateCron = cron.New()
-	_, err := app.updateCron.AddFunc(schedule, func() {
+	idSelfUpdate, err = app.updateCron.AddFunc(schedule, func() {
 		if !app.checking.Load() {
-			if !StartFromGUI && enableSelfUpdate && !isDocker {
-				slog.Debug("定时检测版本更新并自动升级...")
+			app.updateMu.Lock()
+			defer app.updateMu.Unlock()
+
+			// 通过 defer 在当前任务完毕后打印下一次时间
+			defer func() {
+				if app.updateCron != nil {
+					if entry := app.updateCron.Entry(idSelfUpdate); entry.Valid() {
+						slog.Info("主程序更新完成", "next", app.formatNextRunTime(entry.Next, app.updateCron.Location()))
+					}
+				}
+			}()
+
+			if !StartFromGUI && enableSelfUpdate && !isDockerEnv {
+				slog.Debug("定时检测主程序版本更新并自动升级...")
 				updateDone := make(chan struct{})
 				go func() {
 					app.CheckUpdateAndRestart(true) // 定时任务使用 true
@@ -648,12 +647,12 @@ func (app *App) SetupUpdateTasks() {
 				}()
 				<-updateDone
 			} else {
-				slog.Debug("定时检测新版本...")
+				slog.Debug("定时检测主程序新版本...")
 				detectDone := make(chan struct{})
 				go func() {
 					_, _, err := app.detectLatestRelease()
 					if err != nil {
-						slog.Warn("检测更新错误", "error", err)
+						slog.Warn("检测主程序更新错误", "error", err)
 					}
 					close(detectDone)
 				}()
@@ -663,9 +662,71 @@ func (app *App) SetupUpdateTasks() {
 	})
 	if err != nil {
 		slog.Error("注册 定时检测版本更新 定时任务失败", "error", err)
-		app.updateCron.Stop()
-		app.updateCron = nil
-	} else {
-		app.updateCron.Start()
+	}
+
+	// 任务 B：GeoLite2 数据库定时更新
+	idGeoDB, err = app.updateCron.AddFunc("0 12 * * 5", func() {
+		if !app.checking.Load() {
+			// 加锁排队
+			app.updateMu.Lock()
+			defer app.updateMu.Unlock()
+			slog.Info("定时更新 GeoLite2 数据库...")
+			if err := assets.UpdateGeoLite2DB(); err != nil {
+				slog.Error("更新 GeoLite2 数据库失败", "error", err)
+			}
+
+			// 任务执行完毕后输出下一次时间
+			if app.updateCron != nil {
+				if entry := app.updateCron.Entry(idGeoDB); entry.Valid() {
+					slog.Info("GeoLite2 更新完成", "next", app.formatNextRunTime(entry.Next, app.updateCron.Location()))
+				}
+			}
+		}
+	})
+	if err != nil {
+		slog.Error("注册 GeoLite2 更新任务失败", "error", err)
+	}
+
+	// 任务 C：Sub-Store 自动更新
+	subStoreSchedule := config.GlobalConfig.SubStoreUpdateCron
+	if subStoreSchedule == "" {
+		subStoreSchedule = "0 12 * * 5" // 无配置默认跟随周五
+	}
+	idSubStore, err = app.updateCron.AddFunc(subStoreSchedule, func() {
+		if !app.checking.Load() {
+			app.updateMu.Lock()
+			defer app.updateMu.Unlock()
+			slog.Info("定时检查并更新 Sub-Store 前后端...")
+			if err := assets.UpdateSubStoreAssets(); err != nil {
+				slog.Error("更新 Sub-Store 失败", "error", err)
+			}
+
+			// 任务执行完毕后输出下一次时间
+			if app.updateCron != nil {
+				if entry := app.updateCron.Entry(idSubStore); entry.Valid() {
+					slog.Info("Sub-Store 更新完成", "next", app.formatNextRunTime(entry.Next, app.updateCron.Location()))
+				}
+			}
+		}
+	})
+	if err != nil {
+		slog.Error("注册 Sub-Store 更新任务失败", "error", err)
+	}
+
+	// 所有任务组装完毕，统一启动
+	app.updateCron.Start()
+
+	// 在任务启动时，遍历并打印所有更新任务的下一次时间
+	taskNames := map[cron.EntryID]string{
+		idSelfUpdate: "主程序检测/更新",
+		idGeoDB:      "GeoLite2 数据库更新",
+		idSubStore:   "Sub-Store 资源更新",
+	}
+	for _, entry := range app.updateCron.Entries() {
+		if entry.Valid() {
+			if taskName, ok := taskNames[entry.ID]; ok {
+				slog.Debug(fmt.Sprintf("设置 %s 任务", taskName), "next", app.formatNextRunTime(entry.Next, app.updateCron.Location()))
+			}
+		}
 	}
 }

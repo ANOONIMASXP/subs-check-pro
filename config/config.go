@@ -125,6 +125,7 @@ type Config struct {
 	AppriseAPIServer    string   `yaml:"apprise-api-server"`
 	RecipientURL        []string `yaml:"recipient-url"`
 	NotifyTitle         string   `yaml:"notify-title"`
+	SubStoreUpdateCron  string   `yaml:"sub-store-update-cron"`
 	SubStorePort        string   `yaml:"sub-store-port"`
 	SubStorePath        string   `yaml:"sub-store-path"`
 	SubStoreSyncCron    string   `yaml:"sub-store-sync-cron"`

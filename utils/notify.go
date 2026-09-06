@@ -358,10 +358,36 @@ func SendNotifyCheckResult(length int, checkTrafficTotal string) {
 	broadcastNotify(NotifyNodeStatus, title, body, "")
 }
 
+// SendNotifySubStoreAssets 发送 Sub-Store 更新通知
+func SendNotifySubStoreAssets(frontendUpdated bool, frontendVer string, backendUpdated bool, backendVer string) {
+	// 如果都没有更新，则直接返回，不发送通知
+	if !frontendUpdated && !backendUpdated {
+		return
+	}
+
+	title := "🧩 Sub-Store 资源更新"
+	var lines []string
+
+	// 动态拼接消息体，使用语义化 Emoji 替代重复的 ✅
+	if frontendUpdated {
+		lines = append(lines, "🌐 前端："+frontendVer)
+	}
+	if backendUpdated {
+		lines = append(lines, "⚙️ 后端："+backendVer)
+	}
+
+	lines = append(lines, "🕒 "+GetCurrentTime())
+
+	body := strings.Join(lines, "  \n")
+
+	// 发送通知 (借用 NotifyGeoDBUpdate 的 group 归类)
+	broadcastNotify(NotifyGeoDBUpdate, title, body, "")
+}
+
 // SendNotifyGeoDBUpdate 发送 GeoDB 更新通知
 func SendNotifyGeoDBUpdate(version string) {
-	title := "🔔 MaxMind GeoDB 更新"
-	body := "✅ 已更新到：" + version +
+	title := "🌍 MaxMind GeoDB 更新"
+	body := "📍 已更新到：" + version +
 		"  \n🕒 " + GetCurrentTime()
 
 	broadcastNotify(NotifyGeoDBUpdate, title, body, "")
@@ -369,7 +395,7 @@ func SendNotifyGeoDBUpdate(version string) {
 
 // SendNotifySelfUpdate 发送程序自更新通知
 func SendNotifySelfUpdate(current, latest string) {
-	title := "🔔 subs-check-pro 自动更新"
+	title := "📦 subs-check-pro 自动更新"
 	body := "✅ " + current + " -> " + latest +
 		"  \n🕒 " + GetCurrentTime()
 

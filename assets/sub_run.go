@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/klauspost/compress/zstd"
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/sinspired/subs-check-pro/v2/config"
@@ -48,6 +49,34 @@ type embeddedAsset struct {
 	data []byte
 	path string
 	desc string
+}
+
+func parseVersion(v string) *semver.Version {
+	ver, _ := semver.NewVersion(strings.TrimSpace(v))
+	return ver
+}
+
+func extractVersionFromJS(data []byte) string {
+	lines := strings.SplitN(string(data), "\n", 5) // 只看前几行
+	prefix := "// SUB_STORE_BACKEND_VERSION:"
+	for _, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func getLocalJSVersion(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	return extractVersionFromJS(buf[:n])
 }
 
 // getSubStorePaths 获取 sub-store 相关路径
@@ -288,7 +317,6 @@ func startSubStore(ctx context.Context) error {
 func clearOldFiles(paths *subStorePaths) {
 	filesToRemove := []string{
 		paths.nodePath,
-		paths.jsPath,
 		paths.subsCheckProLogoPath,
 		paths.singBoxLogoPath,
 		paths.shadowrocketConfigPath,
@@ -300,7 +328,6 @@ func clearOldFiles(paths *subStorePaths) {
 	for _, f := range filesToRemove {
 		_ = os.Remove(f)
 	}
-	_ = os.RemoveAll(paths.frontDir)
 }
 
 // setupSubStoreEnv 提取并处理繁长的子进程环境变量设置
@@ -443,7 +470,7 @@ func writeEmbeddedFile(data []byte, targetPath string, perm os.FileMode, desc st
 	return nil
 }
 
-// extractFrontendFS 将嵌入的前端资源目录展开到目标目录
+// extractFrontendFS 将嵌入的前端资源目录解压到目标目录
 // embed.FS 中的路径始终以 "/" 分隔（与平台无关），
 // 这里先去掉根目录前缀，再用 filepath.FromSlash 转换为
 // 当前操作系统的路径分隔符。
@@ -488,7 +515,6 @@ func extractFrontendFS(frontendFS embed.FS, targetDir string) error {
 // 释放策略：
 //   - node 二进制：体积大、更新频率低，仍以 zstd 压缩嵌入，需解压
 //   - sub-store 后端脚本 / 覆写 yaml / 前端资源目录：均为文本资源，
-//     已改为直接嵌入原始文件，无需解压，直接写出即可
 func extractAssets(paths *subStorePaths) error {
 	// 创建 zstd 解码器，仅用于解压 node 二进制
 	zstdDecoder, err := zstd.NewReader(nil)
@@ -502,9 +528,38 @@ func extractAssets(paths *subStorePaths) error {
 		return err
 	}
 
-	// 展开 sub-store 前端资源目录
-	if err := extractFrontendFS(EmbeddedSubStoreFrontend, paths.frontDir); err != nil {
-		return fmt.Errorf("展开前端资源失败: %w", err)
+	// 1. 后端 JS 比对
+	embedBackendVer := parseVersion(extractVersionFromJS(EmbeddedSubStoreBackend))
+	localBackendVer := parseVersion(getLocalJSVersion(paths.jsPath))
+
+	// 若本地为空、损坏，或内嵌版本更新，则覆盖
+	shouldOverwriteBackend := localBackendVer == nil || (embedBackendVer != nil && embedBackendVer.GreaterThan(localBackendVer))
+
+	if shouldOverwriteBackend && embedBackendVer != nil {
+		slog.Info("检测到 Sub-Store 后端新版本，准备覆盖",
+			"local", localBackendVer, "embed", embedBackendVer)
+	}
+
+	// 2. 前端版本比对
+	embedFVerBytes, _ := EmbeddedSubStoreFrontend.ReadFile("frontend/frontend.version")
+	embedFVer := parseVersion(string(embedFVerBytes))
+
+	localFVerBytes, _ := os.ReadFile(filepath.Join(paths.frontDir, "frontend.version"))
+	localFVer := parseVersion(string(localFVerBytes))
+
+	shouldOverwriteFrontend := localFVer == nil || (embedFVer != nil && embedFVer.GreaterThan(localFVer))
+
+	if shouldOverwriteFrontend && embedFVer != nil {
+		slog.Info("检测到 Sub-Store 前端新版本，准备覆盖",
+			"local", localFVer, "embed", embedFVer)
+	}
+
+	// 执行释放逻辑
+	if shouldOverwriteFrontend {
+		_ = os.RemoveAll(paths.frontDir)
+		if err := extractFrontendFS(EmbeddedSubStoreFrontend, paths.frontDir); err != nil {
+			return fmt.Errorf("解压前端资源失败: %w", err)
+		}
 	}
 
 	assets := []embeddedAsset{
@@ -518,6 +573,10 @@ func extractAssets(paths *subStorePaths) error {
 	}
 
 	for _, asset := range assets {
+		// 动态判断后端 JS 是否需要跳过覆盖
+		if asset.path == paths.jsPath && !shouldOverwriteBackend {
+			continue
+		}
 		if err := writeEmbeddedFile(asset.data, asset.path, 0o644, asset.desc); err != nil {
 			return err
 		}
