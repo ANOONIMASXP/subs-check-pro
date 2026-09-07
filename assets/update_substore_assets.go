@@ -2,6 +2,7 @@ package assets
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -79,6 +80,10 @@ type subStoreUpdater struct {
 	proxyClient  *http.Client
 	directClient *http.Client
 	useSysProxy  bool
+
+	// 缓存 GitHub Proxy 检测结果，避免重复进行耗时的网络检测
+	ghProxyChecked bool
+	useGhProxy     bool
 }
 
 // newSubStoreUpdater 创建并初始化更新器，显式指定代理规则
@@ -107,47 +112,111 @@ func newSubStoreUpdater() *subStoreUpdater {
 	}
 }
 
-// doRequest 统一封装带 fallback 机制的 HTTP 请求，并自动注入 Token
+// getGhProxy 确保一次更新周期内最多只调用一次测速，避免卡顿
+func (u *subStoreUpdater) getGhProxy() bool {
+	if !u.ghProxyChecked {
+		u.useGhProxy = utils.GetGhProxy()
+		u.ghProxyChecked = true
+	}
+	return u.useGhProxy
+}
+
+// doRequest 统一封装带 fallback 机制的 HTTP 请求，动态应用代理与 Token
 func (u *subStoreUpdater) doRequest(targetURL string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", targetURL, nil)
-	if err != nil {
-		return nil, err
+	token := config.GlobalConfig.GithubToken
+	hasValidToken := utils.IsValidGitHubToken(token)
+
+	// 1. 准备目标 URL (原始链接 vs 加速链接)
+	rawURL := targetURL
+	warpedURL := targetURL
+	// API 请求不使用 GhProxy 加速，仅加速资源文件下载
+	if !strings.Contains(targetURL, "api.github.com") {
+		warpedURL = utils.WarpURL(targetURL, u.getGhProxy())
 	}
 
-	// 注入 Token (仅官方域名)
-	if token := config.GlobalConfig.GithubToken; token != "" {
-		if host := strings.ToLower(req.URL.Host); strings.HasSuffix(host, "github.com") || strings.HasSuffix(host, "githubusercontent.com") {
-			req.Header.Set("Authorization", "Bearer "+token)
+	// 2. 动态构建 客户端+URL 的重试策略队列
+	type strategy struct {
+		name   string
+		client *http.Client
+		url    string
+	}
+	var strategies []strategy
+
+	if u.useSysProxy {
+		if hasValidToken {
+			// 有代理且有合格 Token：优先系统代理请求原始链接，后直连加速
+			strategies = append(strategies, strategy{"系统代理", u.proxyClient, rawURL})
+			if warpedURL != rawURL {
+				strategies = append(strategies, strategy{"直连ᴳ", u.directClient, warpedURL})
+			}
+			strategies = append(strategies, strategy{"直连", u.directClient, rawURL})
+		} else {
+			// 有代理但无/不合格 Token：优先直连加速，最后尝试系统代理兜底
+			if warpedURL != rawURL {
+				strategies = append(strategies, strategy{"直连ᴳ", u.directClient, warpedURL})
+			} else {
+				strategies = append(strategies, strategy{"直连ᶠ", u.directClient, rawURL})
+			}
+			strategies = append(strategies, strategy{"系统代理ᶠ", u.proxyClient, rawURL})
 		}
+	} else {
+		// 未启用系统代理：优先加速，后直连
+		if warpedURL != rawURL {
+			strategies = append(strategies, strategy{"直连ᴳ", u.directClient, warpedURL})
+		}
+		strategies = append(strategies, strategy{"直连", u.directClient, rawURL})
 	}
 
-	// 策略 1: 走默认 Client (代理或直连)
-	client := u.directClient
-	if u.useSysProxy {
-		client = u.proxyClient
-	}
+	// 3. 按队列顺序执行请求
+	var lastErr error
+	var lastStatus int
 
-	resp, err := client.Do(req)
-	if err == nil && resp.StatusCode == http.StatusOK {
-		return resp, nil
-	}
-	if resp != nil {
-		resp.Body.Close()
-	}
+	for i, st := range strategies {
+		// 因为不同策略对应的 URL 会变，必须在循环内生成 Request
+		req, err := http.NewRequest("GET", st.url, nil)
+		if err != nil {
+			lastErr = fmt.Errorf("创建请求失败: %w", err)
+			continue
+		}
 
-	// 策略 2: Fallback (如果启用了系统代理且失败了，尝试强制直连)
-	if u.useSysProxy {
-		slog.Warn("系统代理请求失败，尝试无代理直连...", "url", targetURL, "error", err)
-		resp, err = u.directClient.Do(req) // 复用 req 对象
+		// 安全注入 Token (utils.InjectGitHubToken 内部有官方域名白名单，不会泄露给第三方加速站)
+		if hasValidToken {
+			utils.InjectGitHubToken(req, token)
+		}
+
+		resp, err := st.client.Do(req)
+
+		// 成功，直接返回
 		if err == nil && resp.StatusCode == http.StatusOK {
 			return resp, nil
 		}
-		if resp != nil {
-			resp.Body.Close()
+
+		// 记录失败原因
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			lastStatus = resp.StatusCode
+			resp.Body.Close() // 丢弃非 200 的响应
+		}
+
+		// 若存在下一个策略，打印警告日志并继续重试
+		if i < len(strategies)-1 {
+			slog.Warn("请求失败，触发重试",
+				"当前", st.name,
+				"切换至", strategies[i+1].name,
+			)
+			slog.Debug("Fallback 详情", "url", st.url, "error", lastErr)
 		}
 	}
 
-	return nil, fmt.Errorf("请求失败 (url: %s, err: %v)", targetURL, err)
+	// 4. 所有策略均失败，组装最终报错信息
+	errMsg := fmt.Sprintf("请求失败 (url: %s, 最终错误: %v)", targetURL, lastErr)
+	if lastStatus != 0 {
+		errMsg += fmt.Sprintf(" (状态码: %d)", lastStatus)
+	}
+
+	return nil, errors.New(errMsg)
 }
 
 // 核心更新逻辑
@@ -165,26 +234,27 @@ func UpdateSubStoreAssets() (*SubStoreUpdateResult, error) {
 	// 更新后端
 	result.UpdatedBackend, result.NewBackendVer = updater.updateComponent(
 		"后端", "sub-store-org/Sub-Store", "sub-store.bundle.js", getLocalJSVersion(paths.jsPath),
-		func(dlURL string) error { return updater.downloadFile(dlURL, paths.jsPath, "下载后端") },
+		func(dlURL, version string) error { return updater.downloadFile(dlURL, paths.jsPath, "下载后端") },
 	)
 
 	// 更新前端
 	localFVerBytes, _ := os.ReadFile(filepath.Join(paths.frontDir, "frontend.version"))
 	result.UpdatedFrontend, result.NewFrontendVer = updater.updateComponent(
 		"前端", "sub-store-org/Sub-Store-Front-End", "dist.zip", string(localFVerBytes),
-		func(dlURL string) error {
+		func(dlURL, version string) error {
 			if err := updater.extractRemoteZipToPath(dlURL, paths.frontDir, "下载前端"); err != nil {
 				return err
 			}
-			return os.WriteFile(filepath.Join(paths.frontDir, "frontend.version"), []byte(result.NewFrontendVer), 0644)
+			// 使用显式传入的 version 写入，不再依赖延迟赋值的 result
+			return os.WriteFile(filepath.Join(paths.frontDir, "frontend.version"), []byte(version), 0644)
 		},
 	)
 
 	return result, nil
 }
 
-// updateComponent 抽象的通用组件更新流
-func (u *subStoreUpdater) updateComponent(name, repo, assetName, localVerRaw string, downloadAction func(string) error) (bool, string) {
+// updateComponent 抽象的通用组件更新流 (增加 tag 参数向下传递)
+func (u *subStoreUpdater) updateComponent(name, repo, assetName, localVerRaw string, downloadAction func(dlURL, tag string) error) (bool, string) {
 	tag, dlURL, err := u.getLatestRelease(repo, assetName)
 	if err != nil {
 		slog.Error(fmt.Sprintf("获取 Sub-Store %s 版本失败", name), "error", err)
@@ -198,12 +268,8 @@ func (u *subStoreUpdater) updateComponent(name, repo, assetName, localVerRaw str
 
 	slog.Info(fmt.Sprintf("Sub-Store %s 有新版", name), "local", localVer, "remote", tag)
 
-	// 处理加速代理 URL
-	if !u.useSysProxy {
-		dlURL = utils.WarpURL(dlURL, utils.GetGhProxy())
-	}
-
-	if err := downloadAction(dlURL); err != nil {
+	// 将获取到的 tag 传给闭包函数
+	if err := downloadAction(dlURL, tag); err != nil {
 		slog.Error(fmt.Sprintf("更新 Sub-Store %s 失败", name), "error", err)
 		return false, ""
 	}

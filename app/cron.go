@@ -204,7 +204,7 @@ func (app *App) UpdateSubStoreCron() {
 				// 后端更新完成后，在外部进行优雅重启
 				if result.UpdatedBackend {
 					if !app.checking.Load() {
-						slog.Info("Sub-Store 服务重启中...")
+						slog.Info("Sub-Store 服务 重启中...")
 						if app.cancel != nil {
 							app.cancel()
 							time.Sleep(500 * time.Millisecond)
@@ -224,6 +224,22 @@ func (app *App) UpdateSubStoreCron() {
 					result.UpdatedFrontend, result.NewFrontendVer,
 					result.UpdatedBackend, result.NewBackendVer,
 				)
+
+				// 组装成功信息
+				args := []any{}
+
+				if result.UpdatedFrontend {
+					args = append(args,
+						"前端", result.NewFrontendVer,
+					)
+				}
+				if result.UpdatedBackend {
+					args = append(args,
+						"后端", result.NewBackendVer,
+					)
+				}
+
+				slog.Info("Sub-Store 更新成功", args...)
 			}
 		}
 	})

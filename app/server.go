@@ -554,7 +554,7 @@ func (app *App) updateSubStoreHandler(c *gin.Context) {
 		} else if result != nil && (result.UpdatedBackend || result.UpdatedFrontend) {
 			if result.UpdatedBackend {
 				if !app.checking.Load() {
-					slog.Info("Sub-Store 服务重启中...")
+					slog.Info("Sub-Store 服务 重启中...")
 					if app.cancel != nil {
 						app.cancel()
 						time.Sleep(500 * time.Millisecond)

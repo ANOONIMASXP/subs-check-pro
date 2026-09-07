@@ -361,13 +361,13 @@ func (app *App) onConfigChange() {
 
 	// 检查后台 主程序 更新任务是否发生变化
 	if oldCronCheckUpdateExpr != config.GlobalConfig.CronCheckUpdate || oldUpdateSwitcher != config.GlobalConfig.EnableSelfUpdate {
-		slog.Warn("版本更新设置发生变化，重新配置主程序定时更新任务")
+		slog.Warn("版本更新设置变化，重新配置主程序定时更新任务")
 		app.UpdateSelfUpdateCron()
 	}
 
 	// 检查后台 Sub-Store 资源更新任务是否发生变化
 	if oldSubStoreUpdateCron != config.GlobalConfig.SubStoreUpdateCron {
-		slog.Warn("Sub-Store 资源更新任务发生变化，重新配置 Sub-Store 定时更新任务")
+		slog.Warn("Sub-Store 资源更新设置变化，重新配置 Sub-Store 定时更新任务")
 		app.UpdateSubStoreCron()
 	}
 }
