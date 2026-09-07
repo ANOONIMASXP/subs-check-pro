@@ -111,19 +111,19 @@ func decorateURL(raw string, kind NotifyKind, downloadURL string) string {
 		switch kind {
 		case NotifyNewRelease:
 			q.Set("click", RepoURL)
-			q.Set("group", "release")
+			q.Set("group", "scp-release")
 			q.Set("category", "新版本通知")
 		case NotifyNodeStatus:
-			q.Set("group", "node")
+			q.Set("group", "scp-node")
 			q.Set("category", "节点状态更新")
 		case NotifyGeoDBUpdate:
-			q.Set("group", "geodb")
+			q.Set("group", "scp-geodb")
 			q.Set("category", "数据库更新")
 		case NotifySubStoreAssetsUpdate:
-			q.Set("group", "sub-store")
+			q.Set("group", "scp-sub-store")
 			q.Set("category", "Sub-Store资源更新")
 		case NotifySelfUpdate:
-			q.Set("group", "selfupdate")
+			q.Set("group", "scp-selfupdate")
 			q.Set("category", "程序更新")
 		}
 	case "ntfy":
@@ -155,6 +155,12 @@ func decorateURL(raw string, kind NotifyKind, downloadURL string) string {
 			q.Set("footer", "新版本通知")
 		case NotifyNodeStatus:
 			q.Set("footer", "节点状态更新")
+		case NotifyGeoDBUpdate:
+			q.Set("footer", "Subs-Check-Pro 资源更新")
+		case NotifySelfUpdate:
+			q.Set("footer", "Subs-Check-Pro 主体更新")
+		case NotifySubStoreAssetsUpdate:
+			q.Set("footer", "Subs-Check-Pro 资源更新")
 		}
 	case "mailto", "mailtos":
 		q.Set("from", "Subs-Check-PRO")
