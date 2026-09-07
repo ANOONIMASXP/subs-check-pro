@@ -60,7 +60,7 @@ func FetchSubsData(rawURL string) ([]byte, error) {
 	timeout := max(10, conf.SubUrlsTimeout)
 
 	// 处理为标准的GitHub raw地址
-	rawURL = parse.NormalizeGitHubRawURL(rawURL)
+	rawURL = utils.NormalizeGitHubRawURL(rawURL)
 
 	candidates, hasPlaceholder := buildCandidateURLs(rawURL)
 	var lastErr error
