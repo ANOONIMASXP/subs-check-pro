@@ -2,7 +2,6 @@ package assets
 
 import (
 	"archive/zip"
-	"bytes"
 	"fmt"
 	"io"
 	"log/slog"
@@ -59,10 +58,10 @@ func (pr *progressReader) printProgress(isEOF bool) {
 		bar += ">" + strings.Repeat(" ", barWidth-barFilled-1)
 	}
 
-	curKB := pr.current / 1024
-	totKB := pr.total / 1024
+	curKB, totKB := pr.current/1024, pr.total/1024
+	// \033[K 用于清除当前行光标后的内容，防止字符残留
+	str := fmt.Sprintf("\r\033[K%s: [%s] %.1f%% (%dKB/%dKB)", pr.title, bar, percent, curKB, totKB)
 
-	str := fmt.Sprintf("\r%s: [%s] %.1f%% (%dKB/%dKB)", pr.title, bar, percent, curKB, totKB)
 	if str != pr.lastStr {
 		fmt.Print(str)
 		pr.lastStr = str
@@ -77,39 +76,83 @@ func (pr *progressReader) printProgress(isEOF bool) {
 
 // subStoreUpdater 封装了显式指定代理的 HTTP 客户端
 type subStoreUpdater struct {
-	client      *http.Client
-	useSysProxy bool
+	proxyClient  *http.Client
+	directClient *http.Client
+	useSysProxy  bool
 }
 
 // newSubStoreUpdater 创建并初始化更新器，显式指定代理规则
 func newSubStoreUpdater() *subStoreUpdater {
-	transport := &http.Transport{}
-	useProxy := utils.GetSysProxy()
+	// 继承 DefaultTransport 的优良特性(超时、连接池等)，而不是用空结构体
+	directTransport := http.DefaultTransport.(*http.Transport).Clone()
+	directTransport.Proxy = nil
 
-	if useProxy {
-		proxyStr := config.GlobalConfig.SystemProxy
-		proxyURL, err := url.Parse(proxyStr)
-		if err != nil {
-			slog.Error("解析配置中的代理 URL 失败，将不使用代理", "proxy_url", proxyStr, "error", err)
-			transport.Proxy = nil
-			useProxy = false
+	proxyTransport := directTransport.Clone()
+	useSysProxy := utils.GetSysProxy()
+
+	if useSysProxy {
+		if proxyURL, err := url.Parse(config.GlobalConfig.SystemProxy); err == nil && proxyURL.String() != "" {
+			proxyTransport.Proxy = http.ProxyURL(proxyURL)
 		} else {
-			transport.Proxy = http.ProxyURL(proxyURL)
+			slog.Warn("代理 URL 解析失败或为空，退化为直连", "url", config.GlobalConfig.SystemProxy)
+			useSysProxy = false
+			proxyTransport.Proxy = nil
 		}
-	} else {
-		transport.Proxy = nil
 	}
 
 	return &subStoreUpdater{
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
-		},
-		useSysProxy: useProxy,
+		proxyClient:  &http.Client{Transport: proxyTransport, Timeout: 30 * time.Second},
+		directClient: &http.Client{Transport: directTransport, Timeout: 30 * time.Second},
+		useSysProxy:  useSysProxy,
 	}
 }
 
-// UpdateSubStoreAssets 检查并自动更新 Sub-Store 前后端，返回更新结果
+// doRequest 统一封装带 fallback 机制的 HTTP 请求，并自动注入 Token
+func (u *subStoreUpdater) doRequest(targetURL string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", targetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// 注入 Token (仅官方域名)
+	if token := config.GlobalConfig.GithubToken; token != "" {
+		if host := strings.ToLower(req.URL.Host); strings.HasSuffix(host, "github.com") || strings.HasSuffix(host, "githubusercontent.com") {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+
+	// 策略 1: 走默认 Client (代理或直连)
+	client := u.directClient
+	if u.useSysProxy {
+		client = u.proxyClient
+	}
+
+	resp, err := client.Do(req)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		return resp, nil
+	}
+	if resp != nil {
+		resp.Body.Close()
+	}
+
+	// 策略 2: Fallback (如果启用了系统代理且失败了，尝试强制直连)
+	if u.useSysProxy {
+		slog.Warn("系统代理请求失败，尝试无代理直连...", "url", targetURL, "error", err)
+		resp, err = u.directClient.Do(req) // 复用 req 对象
+		if err == nil && resp.StatusCode == http.StatusOK {
+			return resp, nil
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}
+
+	return nil, fmt.Errorf("请求失败 (url: %s, err: %v)", targetURL, err)
+}
+
+// 核心更新逻辑
+
+// UpdateSubStoreAssets 检查并自动更新 Sub-Store 前后端
 func UpdateSubStoreAssets() (*SubStoreUpdateResult, error) {
 	paths, err := getSubStorePaths()
 	if err != nil {
@@ -119,48 +162,54 @@ func UpdateSubStoreAssets() (*SubStoreUpdateResult, error) {
 	updater := newSubStoreUpdater()
 	result := &SubStoreUpdateResult{}
 
-	// 1. 检查并更新后端
-	if tag, dlURL, err := updater.getLatestRelease("sub-store-org/Sub-Store", "sub-store.bundle.js"); err == nil {
-		localVer := parseVersion(getLocalJSVersion(paths.jsPath))
-		remoteVer := parseVersion(tag)
+	// 更新后端
+	result.UpdatedBackend, result.NewBackendVer = updater.updateComponent(
+		"后端", "sub-store-org/Sub-Store", "sub-store.bundle.js", getLocalJSVersion(paths.jsPath),
+		func(dlURL string) error { return updater.downloadFile(dlURL, paths.jsPath, "下载后端") },
+	)
 
-		if remoteVer != nil && (localVer == nil || remoteVer.GreaterThan(localVer)) {
-			slog.Info("发现 Sub-Store 后端新版本，正在下载...", "local", localVer, "remote", tag)
-			if err := updater.downloadFile(dlURL, paths.jsPath, "下载后端"); err == nil {
-				slog.Info("Sub-Store 已更新后端文件", "version", tag)
-				result.UpdatedBackend = true
-				result.NewBackendVer = tag
-			} else {
-				slog.Error("下载 Sub-Store 后端失败", "error", err)
+	// 更新前端
+	localFVerBytes, _ := os.ReadFile(filepath.Join(paths.frontDir, "frontend.version"))
+	result.UpdatedFrontend, result.NewFrontendVer = updater.updateComponent(
+		"前端", "sub-store-org/Sub-Store-Front-End", "dist.zip", string(localFVerBytes),
+		func(dlURL string) error {
+			if err := updater.extractRemoteZipToPath(dlURL, paths.frontDir, "下载前端"); err != nil {
+				return err
 			}
-		}
-	} else {
-		slog.Error("获取 Sub-Store 后端版本失败", "error", err)
-	}
+			return os.WriteFile(filepath.Join(paths.frontDir, "frontend.version"), []byte(result.NewFrontendVer), 0644)
+		},
+	)
 
-	// 2. 检查并更新前端
-	if ftag, fdlURL, err := updater.getLatestRelease("sub-store-org/Sub-Store-Front-End", "dist.zip"); err == nil {
-		localFVerBytes, _ := os.ReadFile(filepath.Join(paths.frontDir, "frontend.version"))
-		localFVer := parseVersion(string(localFVerBytes))
-		remoteFVer := parseVersion(ftag)
-
-		if remoteFVer != nil && (localFVer == nil || remoteFVer.GreaterThan(localFVer)) {
-			slog.Info("发现 Sub-Store 前端新版本，正在解压...", "local", localFVer, "remote", ftag)
-			if err := updater.extractRemoteZipToPath(fdlURL, paths.frontDir, "下载前端"); err == nil {
-				_ = os.WriteFile(filepath.Join(paths.frontDir, "frontend.version"), []byte(ftag), 0o644)
-				slog.Info("Sub-Store 前端已更新", "version", ftag)
-				result.UpdatedFrontend = true
-				result.NewFrontendVer = ftag
-			} else {
-				slog.Error("更新 Sub-Store 前端失败", "error", err)
-			}
-		}
-	} else {
-		slog.Error("获取 Sub-Store 前端版本失败", "error", err)
-	}
-
-	// 移除了 utils.SendNotifySubStoreAssets，交由外部处理
 	return result, nil
+}
+
+// updateComponent 抽象的通用组件更新流
+func (u *subStoreUpdater) updateComponent(name, repo, assetName, localVerRaw string, downloadAction func(string) error) (bool, string) {
+	tag, dlURL, err := u.getLatestRelease(repo, assetName)
+	if err != nil {
+		slog.Error(fmt.Sprintf("获取 Sub-Store %s 版本失败", name), "error", err)
+		return false, ""
+	}
+
+	localVer, remoteVer := parseVersion(localVerRaw), parseVersion(tag)
+	if remoteVer == nil || (localVer != nil && !remoteVer.GreaterThan(localVer)) {
+		return false, "" // 无需更新
+	}
+
+	slog.Info(fmt.Sprintf("Sub-Store %s 有新版", name), "local", localVer, "remote", tag)
+
+	// 处理加速代理 URL
+	if !u.useSysProxy {
+		dlURL = utils.WarpURL(dlURL, utils.GetGhProxy())
+	}
+
+	if err := downloadAction(dlURL); err != nil {
+		slog.Error(fmt.Sprintf("更新 Sub-Store %s 失败", name), "error", err)
+		return false, ""
+	}
+
+	slog.Info(fmt.Sprintf("Sub-Store %s 已更新", name), "version", tag)
+	return true, tag
 }
 
 // getLatestRelease 智能获取代理后的下载地址，包含 API 请求防挂回退
@@ -171,39 +220,17 @@ func (u *subStoreUpdater) getLatestRelease(repo string, assetName string) (strin
 	}
 	apiURL := fmt.Sprintf("%s/repos/%s/releases/latest", apiBase, repo)
 
-	resp, err := u.client.Get(apiURL)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		errMsg := ""
-		if err != nil {
-			errMsg = err.Error()
-		} else {
-			errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
-			resp.Body.Close()
-		}
-
-		// 回退机制 1：系统代理请求 API 失败，尝试放弃代理直连 API
-		if u.useSysProxy {
-			slog.Warn("系统代理请求 GitHub API 失败，尝试无代理直连...", "error", errMsg)
-			cleanClient := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 30 * time.Second}
-			resp, err = cleanClient.Get(apiURL)
-			if err != nil {
-				return "", "", err
-			}
-			if resp.StatusCode != http.StatusOK {
-				resp.Body.Close()
-				return "", "", fmt.Errorf("GitHub API 直连请求仍失败: %d", resp.StatusCode)
-			}
-		} else {
-			return "", "", fmt.Errorf("GitHub API 请求失败: %s", errMsg)
-		}
+	resp, err := u.doRequest(apiURL)
+	if err != nil {
+		return "", "", err
 	}
 	defer resp.Body.Close()
 
 	var rel struct {
 		TagName string `json:"tag_name"`
 		Assets  []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
+			Name string `json:"name"`
+			URL  string `json:"browser_download_url"`
 		} `json:"assets"`
 	}
 
@@ -213,62 +240,15 @@ func (u *subStoreUpdater) getLatestRelease(repo string, assetName string) (strin
 
 	for _, asset := range rel.Assets {
 		if asset.Name == assetName {
-			// 返回原始下载直链，让 doGetWithFallback 方法去决定拼接逻辑
-			return rel.TagName, asset.BrowserDownloadURL, nil
+			return rel.TagName, asset.URL, nil
 		}
 	}
 	return "", "", fmt.Errorf("未找到对应的资源文件: %s", assetName)
 }
 
-// doGetWithFallback 发起带回退机制的 HTTP 下载请求
-func (u *subStoreUpdater) doGetWithFallback(rawURL string) (*http.Response, error) {
-	targetURL := rawURL
-
-	// 策略：如果没有使用系统代理，且配置了 GithubProxy，则拼接加速前缀
-	if !u.useSysProxy && config.GlobalConfig.GithubProxy != "" {
-		targetURL = config.GlobalConfig.GithubProxy + rawURL
-	}
-
-	// 尝试一：通过已设定的网络环境发起请求
-	resp, err := u.client.Get(targetURL)
-	if err == nil && resp.StatusCode == http.StatusOK {
-		return resp, nil
-	}
-
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	} else {
-		errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
-		resp.Body.Close() // 失败响应顺手关掉，防止泄露
-	}
-
-	// 回退机制 2：如果启用了系统代理但下载失败，丢弃系统代理并改用 GithubProxy 直连尝试
-	if u.useSysProxy && config.GlobalConfig.GithubProxy != "" {
-		slog.Warn("系统代理下载失败，尝试回退至 GithubProxy...", "error", errMsg)
-
-		fallbackURL := config.GlobalConfig.GithubProxy + rawURL
-
-		// 构建干净的无代理客户端，防止坏掉的系统代理继续干涉
-		cleanClient := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 30 * time.Second}
-
-		resp, err = cleanClient.Get(fallbackURL)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			return resp, nil
-		}
-
-		if err != nil {
-			return nil, fmt.Errorf("回退至 GithubProxy 依然失败: %w", err)
-		}
-		resp.Body.Close()
-		return nil, fmt.Errorf("回退至 GithubProxy 状态码异常: %d", resp.StatusCode)
-	}
-
-	return nil, fmt.Errorf("下载请求失败: %s", errMsg)
-}
-
+// downloadFile 文件下载函数
 func (u *subStoreUpdater) downloadFile(rawURL, path, title string) error {
-	resp, err := u.doGetWithFallback(rawURL)
+	resp, err := u.doRequest(rawURL)
 	if err != nil {
 		return err
 	}
@@ -280,58 +260,49 @@ func (u *subStoreUpdater) downloadFile(rawURL, path, title string) error {
 	}
 	defer outFile.Close()
 
-	// 使用 progressReader 包装器显示下载进度
-	pr := &progressReader{
-		Reader: resp.Body,
-		total:  resp.ContentLength,
-		title:  title,
-	}
-
-	_, err = io.Copy(outFile, pr)
+	// 显示下载进度
+	_, err = io.Copy(outFile, &progressReader{Reader: resp.Body, total: resp.ContentLength, title: title})
 	return err
 }
 
+// extractRemoteZipToPath 下载并解压
 func (u *subStoreUpdater) extractRemoteZipToPath(rawURL string, targetDir string, title string) error {
-	resp, err := u.doGetWithFallback(rawURL)
+	resp, err := u.doRequest(rawURL)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	// 同样使用 progressReader 包装，读取完毕后再传给 Zip
-	pr := &progressReader{
-		Reader: resp.Body,
-		total:  resp.ContentLength,
-		title:  title,
-	}
-
-	zipData, err := io.ReadAll(pr)
+	// 将下载流写入临时文件，避免将整个 ZIP 文件读入内存(防止低配设备 OOM)
+	tmpFile, err := os.CreateTemp("", "substore-front-*.zip")
 	if err != nil {
 		return err
 	}
+	tmpName := tmpFile.Name()
+	defer os.Remove(tmpName)
 
-	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	_, err = io.Copy(tmpFile, &progressReader{Reader: resp.Body, total: resp.ContentLength, title: title})
+	tmpFile.Close() // 必须先关闭文件写入
 	if err != nil {
-		return err
+		return fmt.Errorf("下载 ZIP 失败: %w", err)
 	}
+
+	// 从磁盘打开 ZIP 进行流式解压
+	zipReader, err := zip.OpenReader(tmpName)
+	if err != nil {
+		return fmt.Errorf("解析 ZIP 失败: %w", err)
+	}
+	defer zipReader.Close()
 
 	_ = os.RemoveAll(targetDir)
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return err
-	}
-
 	cleanTargetDir := filepath.Clean(targetDir) + string(os.PathSeparator)
 
 	for _, f := range zipReader.File {
-		if !strings.HasPrefix(f.Name, "dist/") {
-			continue
-		}
-		rel := strings.TrimPrefix(f.Name, "dist/")
-		if rel == "" {
+		if !strings.HasPrefix(f.Name, "dist/") || strings.TrimPrefix(f.Name, "dist/") == "" {
 			continue
 		}
 
-		targetPath := filepath.Join(targetDir, filepath.FromSlash(rel))
+		targetPath := filepath.Join(targetDir, filepath.FromSlash(strings.TrimPrefix(f.Name, "dist/")))
 		if !strings.HasPrefix(targetPath, cleanTargetDir) {
 			return fmt.Errorf("非法的文件路径穿越: %s", targetPath)
 		}
@@ -342,23 +313,27 @@ func (u *subStoreUpdater) extractRemoteZipToPath(rawURL string, targetDir string
 		}
 
 		_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
-		outFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			return err
-		}
-
-		rc, err := f.Open()
-		if err != nil {
-			outFile.Close()
-			return err
-		}
-
-		_, err = io.Copy(outFile, rc)
-		outFile.Close()
-		rc.Close()
-		if err != nil {
+		if err := extractZipFile(f, targetPath); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// extractZipFile 辅助函数，确保 defer 能及时释放文件句柄
+func extractZipFile(f *zip.File, targetPath string) error {
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	outFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+
+	_, err = io.Copy(outFile, rc)
+	return err
 }

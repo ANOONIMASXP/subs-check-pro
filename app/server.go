@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -68,6 +69,9 @@ var (
 
 	subStoreSyncing  atomic.Bool // 标记 SubStore 是否正在后台同步
 	subStoreUpdating atomic.Bool // 标记 SubStore 是否正在后台更新
+
+	subStoreUpdateMsg string
+	subStoreUpdateMu  sync.RWMutex
 )
 
 func init() {
@@ -480,6 +484,10 @@ func (app *App) getStatus(c *gin.Context) {
 		}
 	}
 
+	subStoreUpdateMu.RLock()
+	updateMsg := subStoreUpdateMsg
+	subStoreUpdateMu.RUnlock()
+
 	c.JSON(http.StatusOK, gin.H{
 		"checking":          app.checking.Load(),
 		"fetching":          check.Fetching.Load(),
@@ -494,7 +502,8 @@ func (app *App) getStatus(c *gin.Context) {
 		"lastCheck":         lastCheck,
 		"isSubStoreRunning": assets.IsSubStoreRunning.Load(),
 		"subStoreSyncing":   subStoreSyncing.Load(),  // 配置文件同步状态
-		"subStoreUpdating":  subStoreUpdating.Load(), // 程序资源升级状态
+		"subStoreUpdating":  subStoreUpdating.Load(), // 程序资源更新状态
+		"subStoreUpdateMsg": updateMsg,
 		"eta":               check.ETASeconds.Load(), // -1=计算中, 0=完成, >0=剩余秒
 
 		"subStorePort":  config.GlobalConfig.SubStorePort,
@@ -517,33 +526,37 @@ func (app *App) forceCloseHandler(c *gin.Context) {
 func (app *App) updateSubStoreHandler(c *gin.Context) {
 	// 使用 CompareAndSwap 防止重复并发触发
 	if !subStoreUpdating.CompareAndSwap(false, true) {
-		c.JSON(http.StatusConflict, gin.H{"error": "Sub-Store 正在更新中，请稍后再试"})
+		c.JSON(http.StatusConflict, gin.H{"error": "Sub-Store 正在更新资源，请稍后再试"})
 		return
 	}
 
+	// 触发前先清空上一次的结果
+	subStoreUpdateMu.Lock()
+	subStoreUpdateMsg = ""
+	subStoreUpdateMu.Unlock()
+
 	// 异步执行更新逻辑，防止阻塞前端 HTTP 响应
 	go func() {
-		// 完成后重置升级状态
+		// 完成后重置更新状态
 		defer subStoreUpdating.Store(false)
 
 		// 加上互斥锁，避免与后台的定时更新任务产生冲突
 		app.updateMu.Lock()
 		defer app.updateMu.Unlock()
 
-		slog.Info("收到手动触发请求，正在检查更新 Sub-Store 前后端...")
+		slog.Info("Sub-Store 触发手动更新检查...")
 		result, err := assets.UpdateSubStoreAssets()
-		if err != nil {
-			slog.Error("Sub-Store 手动更新失败", "error", err)
-			return
-		}
 
-		if result != nil && (result.UpdatedBackend || result.UpdatedFrontend) {
-			// 如果后端已更新，进行服务重启
+		var finalMsg string
+		if err != nil {
+			slog.Error("更新 Sub-Store 失败", "error", err)
+			finalMsg = "更新 Sub-Store 失败: " + err.Error()
+		} else if result != nil && (result.UpdatedBackend || result.UpdatedFrontend) {
 			if result.UpdatedBackend {
 				if !app.checking.Load() {
 					slog.Info("Sub-Store 服务重启中...")
 					if app.cancel != nil {
-						app.cancel() // 关闭当前的上下文，停止旧的子协程
+						app.cancel()
 						time.Sleep(500 * time.Millisecond)
 						if err := assets.KillNode(); err != nil {
 							slog.Error("强制清理 node 失败", "err", err)
@@ -561,14 +574,37 @@ func (app *App) updateSubStoreHandler(c *gin.Context) {
 				result.UpdatedFrontend, result.NewFrontendVer,
 				result.UpdatedBackend, result.NewBackendVer,
 			)
-			slog.Info("Sub-Store 手动更新完成")
+
+			// 组装成功信息
+			var parts []string
+			args := []any{}
+
+			if result.UpdatedFrontend {
+				parts = append(parts, "前端 "+result.NewFrontendVer)
+				args = append(args,
+					"前端", result.NewFrontendVer,
+				)
+			}
+			if result.UpdatedBackend {
+				parts = append(parts, "后端 "+result.NewBackendVer)
+				args = append(args,
+					"后端", result.NewBackendVer,
+				)
+			}
+			finalMsg = "更新成功: " + strings.Join(parts, ", ")
+			slog.Info("Sub-Store 更新成功", args...)
 		} else {
-			slog.Info("Sub-Store 前后端已是最新版本，无需升级")
+			finalMsg = "Sub-Store 已是最新版本，无需更新"
+			slog.Info("Sub-Store 已是最新版本，无需更新")
 		}
+		// 写入最终结果供前端轮询获取
+		subStoreUpdateMu.Lock()
+		subStoreUpdateMsg = finalMsg
+		subStoreUpdateMu.Unlock()
 	}()
 
 	// 立即响应 200，前端轮询 /api/status 看到 subStoreUpdating = true 即可显示对应特效
-	c.JSON(http.StatusOK, gin.H{"message": "已在后台启动程序升级流程，请查看日志获取详细进度"})
+	c.JSON(http.StatusOK, gin.H{"message": "启动 Sub-Store 资源更新任务"})
 }
 
 // getLogs 获取日志
