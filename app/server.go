@@ -591,7 +591,7 @@ func (app *App) updateSubStoreHandler(c *gin.Context) {
 					"后端", result.NewBackendVer,
 				)
 			}
-			finalMsg = "更新成功: " + strings.Join(parts, ", ")
+			finalMsg = "Sub-Store 更新成功: " + strings.Join(parts, ", ")
 			slog.Info("Sub-Store 更新成功", args...)
 		} else {
 			finalMsg = "Sub-Store 已是最新版本，无需更新"
