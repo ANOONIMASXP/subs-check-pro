@@ -217,7 +217,12 @@ func UpdateGeoLite2DB() error {
 	_ = os.Remove(bakPath)
 	slog.Info("GeoLite2-Country.mmdb 更新完成")
 	version := rel.TagName
-	utils.SendNotifyGeoDBUpdate(version)
+
+	if config.GlobalConfig.MaxMindDBUpdateNotify {
+		// 使用配置控制通知开关
+		utils.SendNotifyGeoDBUpdate(version)
+	}
+
 	return nil
 }
 

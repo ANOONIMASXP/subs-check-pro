@@ -143,6 +143,9 @@ share-password: ''
 # Sub-Store 前后端资源自动更新任务
 sub-store-update-cron: '14 13 * * 5'
 
+# Sub-Store 前后端资源更新通知开关
+sub-store-update-notify: true
+
 # Sub-Store 启动端口，为空则不启动sub-store
 # 更新需重启程序，不可监听局域网IP，只有三种写法 :8299, 127.0.0.1:8299, 0.0.0.0:8299
 sub-store-port: ':8299'
@@ -312,6 +315,10 @@ platforms:
 # 未获取到位置: HKˣ (使用原方案)
 # 前两位字母是实际浏览网站识别的位置,-US⁰为使用CF CDN服务的网站识别的位置,比如GPT, X等
 enhanced-tag: true
+
+# MaxMind 地理数据库每周自动更新，默认关闭通知
+# 设为 true 开启通知
+maxmind-db-update-notify: false
 
 # MaxMind 地理数据库路径
 # 如果为空，则使用内置的数据库文件（解压到output目录）
