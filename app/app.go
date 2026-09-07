@@ -156,7 +156,7 @@ func (app *App) Initialize() error {
 			slog.Warn("Node.js 不支持 Linux 32位架构，Sub-Store 服务未启动")
 		} else {
 
-			// sub-store 服务启动时,Singbox 版本号才有意义
+			// Sub-Store 服务启动时,Singbox 版本号才有意义
 			utils.InitSingboxVersion()
 
 			subStoreAddr := normalizeListenAddr(config.GlobalConfig.SubStorePort)
@@ -167,12 +167,12 @@ func (app *App) Initialize() error {
 			} else {
 				// 使用 app.ctx 启动 sub-store，让其可被取消
 				go assets.RunSubStoreService(app.ctx)
-				// 短暂等待，保证 sub-store 启动日志按预期顺序输出
+				// 短暂等待，保证 Sub-Store 启动日志按预期顺序输出
 				time.Sleep(500 * time.Millisecond)
 			}
 		}
 	} else {
-		slog.Warn("Sub-store 服务已禁用", "port", "未设置")
+		slog.Warn("Sub-Store 服务已禁用", "port", "未设置")
 		assets.IsSubStoreRunning.Store(false)
 	}
 

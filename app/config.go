@@ -365,7 +365,7 @@ func (app *App) onConfigChange() {
 		app.UpdateSelfUpdateCron()
 	}
 
-	// 检查后台 sub-store 资源更新任务是否发生变化
+	// 检查后台 Sub-Store 资源更新任务是否发生变化
 	if oldSubStoreUpdateCron != config.GlobalConfig.SubStoreUpdateCron {
 		slog.Warn("Sub-Store 资源更新任务发生变化，重新配置 Sub-Store 定时更新任务")
 		app.UpdateSubStoreCron()

@@ -79,7 +79,7 @@ func getLocalJSVersion(path string) string {
 	return extractVersionFromJS(buf[:n])
 }
 
-// getSubStorePaths 获取 sub-store 相关路径
+// getSubStorePaths 获取 Sub-Store 相关路径
 func getSubStorePaths() (*subStorePaths, error) {
 	saver, err := method.NewLocalSaver()
 	if err != nil {
@@ -115,9 +115,9 @@ func getSubStorePaths() (*subStorePaths, error) {
 
 func logStop(port string) {
 	if port != "" {
-		slog.Info("Sub-store 服务已停止", "port", port)
+		slog.Info("Sub-Store 服务已停止", "port", port)
 	} else {
-		slog.Info("Sub-store 服务已禁用", "port", "未设置")
+		slog.Info("Sub-Store 服务已禁用", "port", "未设置")
 	}
 }
 
@@ -152,7 +152,7 @@ func RunSubStoreService(ctx context.Context) {
 			return
 		default:
 			if err := startSubStore(ctx); err != nil {
-				slog.Error("Sub-store 服务崩溃, 正在重启...", "error", err)
+				slog.Error("Sub-Store 服务崩溃, 正在重启...", "error", err)
 				IsSubStoreRunning.Store(false)
 			}
 			// 在循环间隙检查 ctx，若被取消则退出
@@ -211,12 +211,12 @@ func startSubStore(ctx context.Context) error {
 		return fmt.Errorf("创建输出目录失败: %w", err)
 	}
 	if err := os.MkdirAll(paths.substoreDir, 0o755); err != nil {
-		return fmt.Errorf("创建sub-store目录失败: %w", err)
+		return fmt.Errorf("创建 Sub-Store 目录失败: %w", err)
 	}
 
-	// 迁移sub-store配置
+	// 迁移 Sub-Store 配置
 	if err := migrateOldFiles(filepath.Dir(paths.substoreDir), "sub-store.json", paths.substoreDir); err != nil {
-		slog.Error("迁移sub-store配置失败")
+		slog.Error("迁移 Sub-Store 配置失败")
 	}
 
 	// 移除旧规则文件
@@ -229,7 +229,7 @@ func startSubStore(ctx context.Context) error {
 	// TODO: 自动在线更新，不再删除
 	clearOldFiles(paths)
 
-	// 释放 sub-store 相关资源（node 解压 + js/yaml/前端 直接写出）
+	// 释放 Sub-Store 相关资源（node 解压 + js/yaml/前端 直接写出）
 	if err := extractAssets(paths); err != nil {
 		return err
 	}
@@ -270,12 +270,12 @@ func startSubStore(ctx context.Context) error {
 	done := make(chan struct{})
 	defer close(done)
 
-	// 让子进程独立进程组，避免收到 Ctrl+C，在app中负责接收信号关闭sub-store
+	// 让子进程独立进程组，避免收到 Ctrl+C，在app中负责接收信号关闭 Sub-Store
 	setSysProcAttr(cmd) // 跨平台设置
 
 	if err := cmd.Start(); err != nil {
 		IsSubStoreRunning.Store(false)
-		return fmt.Errorf("启动 sub-store 失败: %w", err)
+		return fmt.Errorf("启动 Sub-Store 失败: %w", err)
 	}
 
 	subStorePort := strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":")
@@ -514,7 +514,7 @@ func extractFrontendFS(frontendFS embed.FS, targetDir string) error {
 //
 // 释放策略：
 //   - node 二进制：体积大、更新频率低，仍以 zstd 压缩嵌入，需解压
-//   - sub-store 后端脚本 / 覆写 yaml / 前端资源目录：均为文本资源，
+//   - Sub-Store 后端脚本 / 覆写 yaml / 前端资源目录：均为文本资源，
 func extractAssets(paths *subStorePaths) error {
 	// 创建 zstd 解码器，仅用于解压 node 二进制
 	zstdDecoder, err := zstd.NewReader(nil)
@@ -562,7 +562,7 @@ func extractAssets(paths *subStorePaths) error {
 	}
 
 	assets := []embeddedAsset{
-		{EmbeddedSubStoreBackend, paths.jsPath, "sub-store 核心脚本"},
+		{EmbeddedSubStoreBackend, paths.jsPath, "Sub-Store 核心脚本"},
 		{EmbeddedSubsCheckProLogo, paths.subsCheckProLogoPath, "subs-check-pro svg logo"},
 		{EmbeddedSingBoxLogo, paths.singBoxLogoPath, "sing-box svg logo"},
 		{EmbeddedShadowrocketConfig, paths.shadowrocketConfigPath, "Shadowrocket 配置文件"},
@@ -594,9 +594,9 @@ func killNodeProcess(nodePath string) {
 	if err == nil {
 		err := killProcess(pid)
 		if err != nil {
-			slog.Debug("Sub-store service kill failed", "error", err)
+			slog.Debug("Sub-Store service kill failed", "error", err)
 		}
-		slog.Debug("Sub-store service already killed", "pid", pid)
+		slog.Debug("Sub-Store service already killed", "pid", pid)
 	}
 }
 
@@ -652,11 +652,11 @@ func KillNode() error {
 		return nil
 	}
 	if err := killProcess(pid); err != nil {
-		slog.Debug("Sub-store service kill failed", "error", err)
+		slog.Debug("Sub-Store service kill failed", "error", err)
 		return err
 	}
 	IsSubStoreRunning.Store(false)
-	slog.Debug("Sub-store service killed", "pid", pid)
+	slog.Debug("Sub-Store service killed", "pid", pid)
 	return nil
 }
 

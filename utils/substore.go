@@ -22,7 +22,7 @@ import (
 // Args 脚本操作参数
 type Args = map[string]any
 
-// ScriptOperator 脚本操作参数，对应 sub-store process 列表中的每一项
+// ScriptOperator 脚本操作参数，对应 Sub-Store process 列表中的每一项
 type ScriptOperator struct {
 	Type       string `json:"type"`
 	Args       Args   `json:"args,omitempty"`
@@ -31,7 +31,7 @@ type ScriptOperator struct {
 	Disabled   bool   `json:"disabled"`
 }
 
-// sub-store 资源结构体
+// Sub-Store 资源结构体
 
 // sub 单条订阅
 type sub struct {
@@ -796,7 +796,7 @@ func (f file) syncSubStoreFile() error {
 		if err := createResource(endpoint, f, f.Name); err != nil {
 			return fmt.Errorf("创建 %s 失败: %w", f.Name, err)
 		}
-		slog.Info("sub-store 订阅已创建", "name", f.Name)
+		slog.Info("Sub-Store 订阅已创建", "name", f.Name)
 		return nil
 	}
 
@@ -810,13 +810,13 @@ func (f file) syncSubStoreFile() error {
 	if err := syncResource(endpoint, f, f.Name); err != nil {
 		return fmt.Errorf("同步 %s 失败: %w", f.Name, err)
 	}
-	slog.Info("sub-store 订阅已同步", "name", f.Name)
+	slog.Info("Sub-Store 订阅已同步", "name", f.Name)
 	return nil
 }
 
 // 入口
 
-// SyncSubStore 同步 sub-store 全部订阅
+// SyncSubStore 同步 Sub-Store 全部订阅
 // 执行检测完毕后如果有新节点，无脑进行四个维度的全量推送
 func SyncSubStore(yamlData []byte) {
 	SyncSubStorePartial(yamlData, true, true, true, true)
@@ -881,7 +881,7 @@ func SyncSubStorePartial(yamlData []byte, doSub, doMihomo, doSbLatest, doSbOld b
 			slog.Error("同步订阅失败", "name", defaultSub.Name, "error", err)
 			return
 		}
-		slog.Info("sub-store 订阅已同步", "name", defaultSub.Name)
+		slog.Info("Sub-Store 订阅已同步", "name", defaultSub.Name)
 	}
 
 	// --- 2. mihomo ---
@@ -911,7 +911,7 @@ func SyncSubStorePartial(yamlData []byte, doSub, doMihomo, doSbLatest, doSbOld b
 	}
 
 	if doSub || doMihomo || doSbLatest || doSbOld {
-		slog.Info("sub-store 同步完成")
+		slog.Info("Sub-Store 同步完成")
 	}
 }
 
@@ -923,7 +923,7 @@ func processSingboxFile(sbc *config.SingBoxConfig, defaultJS, defaultJSON, versi
 	}
 	f := newSingboxFile(SingboxName+"-"+version, js, jsonStr)
 	if err := f.syncSubStoreFile(); err != nil {
-		slog.Warn("sub-store 订阅同步失败", "name", f.Name, "error", err)
+		slog.Warn("Sub-Store 订阅同步失败", "name", f.Name, "error", err)
 		return err
 	}
 	return nil

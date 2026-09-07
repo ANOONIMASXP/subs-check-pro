@@ -140,10 +140,10 @@ api-key: ''
 share-password: ''
 
 # -----------SUB-STORE-----------
-# sub-store 前后端资源自动更新任务
+# Sub-Store 前后端资源自动更新任务
 sub-store-update-cron: '14 13 * * 5'
 
-# sub-store的启动端口，为空则不启动sub-store
+# Sub-Store 启动端口，为空则不启动sub-store
 # 更新需重启程序，不可监听局域网IP，只有三种写法 :8299, 127.0.0.1:8299, 0.0.0.0:8299
 sub-store-port: ':8299'
 # sub-store自定义访问路径，后续访问订阅要带上此路径
@@ -159,7 +159,7 @@ sub-store-path: ''
 # 内置 ACL4SSR_Online_Full 和 Mihomo-Rules-CDN.yaml
 mihomo-overwrite-url: http://127.0.0.1:8199/Mihomo-Rules-CDN.yaml
 
-# sub-store 节点操作，针对默认的 sub 订阅
+# Sub-Store 节点操作，针对默认的 sub 订阅
 sub-process:
   # DNS 解析操作
   resolve-domain:

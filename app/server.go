@@ -408,8 +408,19 @@ func (app *App) updateConfig(c *gin.Context) {
 		return
 	}
 
+	isAllLocal := func(urls ...string) bool {
+		for _, u := range urls {
+			if !utils.IsLocalURL(u) {
+				return false
+			}
+		}
+		return true
+	}
+
 	hasSubStoreSync := doSub || doMihomo || doLatest || doOld
-	needGetGhProxy := doMihomo || doLatest || doOld
+	needGetGhProxy := (doMihomo && !isAllLocal(newConfig.MihomoOverwriteURL)) ||
+		(doLatest && !isAllLocal(newConfig.SingboxLatest.JS, newConfig.SingboxLatest.JSON)) ||
+		(doOld && !isAllLocal(newConfig.SingboxOld.JS, newConfig.SingboxOld.JSON))
 
 	// 在保存接口内直接启动异步无阻塞 goroutine，彻底剔除前端发起的更新 api 和轮询开销
 	if hasSubStoreSync {
@@ -437,8 +448,8 @@ func (app *App) updateConfig(c *gin.Context) {
 					targets = append(targets, utils.SingboxName+newConfig.SingboxOld.Version)
 				}
 
-				// 打印日志，格式如: msg="已触发 sub-store 后台更新" name="sub丨mihomo"
-				slog.Info("已触发 sub-store 后台更新", "name", strings.Join(targets, "丨"))
+				// 打印日志，格式如: msg="已触发 Sub-Store 后台同步" name="sub丨mihomo"
+				slog.Info("已触发 Sub-Store 后台同步", "name", strings.Join(targets, "丨"))
 				utils.SyncSubStorePartial(nil, doSub, doMihomo, doLatest, doOld)
 			}
 		}()
