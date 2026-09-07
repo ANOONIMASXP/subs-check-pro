@@ -140,7 +140,7 @@ api-key: ''
 share-password: ''
 
 # -----------SUB-STORE-----------
-# sub-store 资源自动更新任务
+# sub-store 前后端资源自动更新任务
 sub-store-update-cron: '14 13 * * 5'
 
 # sub-store的启动端口，为空则不启动sub-store

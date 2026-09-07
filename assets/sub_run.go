@@ -279,7 +279,7 @@ func startSubStore(ctx context.Context) error {
 	}
 
 	subStorePort := strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":")
-	slog.Info("Sub-Store已启动", "port", subStorePort, "pid", cmd.Process.Pid, "log", paths.logPath)
+	slog.Info("Sub-Store 已启动", "port", subStorePort, "pid", cmd.Process.Pid, "log", paths.logPath)
 	IsSubStoreRunning.Store(true)
 
 	// ctx 取消时尝试杀掉子进程
@@ -536,8 +536,7 @@ func extractAssets(paths *subStorePaths) error {
 	shouldOverwriteBackend := localBackendVer == nil || (embedBackendVer != nil && embedBackendVer.GreaterThan(localBackendVer))
 
 	if shouldOverwriteBackend && embedBackendVer != nil {
-		slog.Info("检测到 Sub-Store 后端新版本，准备覆盖",
-			"local", localBackendVer, "embed", embedBackendVer)
+		slog.Debug(fmt.Sprintf("更新 Sub-Store 后端：%s -> %s", localBackendVer, embedBackendVer))
 	}
 
 	// 2. 前端版本比对
@@ -550,8 +549,7 @@ func extractAssets(paths *subStorePaths) error {
 	shouldOverwriteFrontend := localFVer == nil || (embedFVer != nil && embedFVer.GreaterThan(localFVer))
 
 	if shouldOverwriteFrontend && embedFVer != nil {
-		slog.Info("检测到 Sub-Store 前端新版本，准备覆盖",
-			"local", localFVer, "embed", embedFVer)
+		slog.Debug(fmt.Sprintf("更新 Sub-Store 前端：%s -> %s", localFVer, embedFVer))
 	}
 
 	// 执行释放逻辑
@@ -560,6 +558,7 @@ func extractAssets(paths *subStorePaths) error {
 		if err := extractFrontendFS(EmbeddedSubStoreFrontend, paths.frontDir); err != nil {
 			return fmt.Errorf("解压前端资源失败: %w", err)
 		}
+		slog.Info(fmt.Sprintf("Sub-Store 已更新：前端 %s -> %s", localFVer, embedFVer))
 	}
 
 	assets := []embeddedAsset{
@@ -573,12 +572,17 @@ func extractAssets(paths *subStorePaths) error {
 	}
 
 	for _, asset := range assets {
+		isBackendJS := asset.path == paths.jsPath
+
 		// 动态判断后端 JS 是否需要跳过覆盖
-		if asset.path == paths.jsPath && !shouldOverwriteBackend {
+		if isBackendJS && !shouldOverwriteBackend {
 			continue
 		}
 		if err := writeEmbeddedFile(asset.data, asset.path, 0o644, asset.desc); err != nil {
 			return err
+		}
+		if isBackendJS && shouldOverwriteBackend {
+			slog.Info(fmt.Sprintf("Sub-Store 已更新：后端 %s -> %s", localBackendVer, embedBackendVer))
 		}
 	}
 

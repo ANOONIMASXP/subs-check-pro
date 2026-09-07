@@ -18,6 +18,14 @@ import (
 	"github.com/sinspired/subs-check-pro/v2/utils"
 )
 
+// SubStoreUpdateResult 包含了 Sub-Store 资产更新的结果信息
+type SubStoreUpdateResult struct {
+	UpdatedBackend  bool
+	UpdatedFrontend bool
+	NewBackendVer   string
+	NewFrontendVer  string
+}
+
 // 进度条追踪器
 type progressReader struct {
 	io.Reader
@@ -101,18 +109,15 @@ func newSubStoreUpdater() *subStoreUpdater {
 	}
 }
 
-// UpdateSubStoreAssets 检查并自动更新 Sub-Store 前后端
-func UpdateSubStoreAssets() error {
+// UpdateSubStoreAssets 检查并自动更新 Sub-Store 前后端，返回更新结果
+func UpdateSubStoreAssets() (*SubStoreUpdateResult, error) {
 	paths, err := getSubStorePaths()
 	if err != nil {
-		return fmt.Errorf("获取路径失败: %w", err)
+		return nil, fmt.Errorf("获取路径失败: %w", err)
 	}
 
 	updater := newSubStoreUpdater()
-
-	// 用于记录更新状态和新版本号
-	var updatedBackend, updatedFrontend bool
-	var newBackendVer, newFrontendVer string
+	result := &SubStoreUpdateResult{}
 
 	// 1. 检查并更新后端
 	if tag, dlURL, err := updater.getLatestRelease("sub-store-org/Sub-Store", "sub-store.bundle.js"); err == nil {
@@ -122,9 +127,9 @@ func UpdateSubStoreAssets() error {
 		if remoteVer != nil && (localVer == nil || remoteVer.GreaterThan(localVer)) {
 			slog.Info("发现 Sub-Store 后端新版本，正在下载...", "local", localVer, "remote", tag)
 			if err := updater.downloadFile(dlURL, paths.jsPath, "下载后端"); err == nil {
-				slog.Info("Sub-Store 后端已更新", "version", tag)
-				updatedBackend = true
-				newBackendVer = tag
+				slog.Info("Sub-Store 已更新后端文件", "version", tag)
+				result.UpdatedBackend = true
+				result.NewBackendVer = tag
 			} else {
 				slog.Error("下载 Sub-Store 后端失败", "error", err)
 			}
@@ -144,8 +149,8 @@ func UpdateSubStoreAssets() error {
 			if err := updater.extractRemoteZipToPath(fdlURL, paths.frontDir, "下载前端"); err == nil {
 				_ = os.WriteFile(filepath.Join(paths.frontDir, "frontend.version"), []byte(ftag), 0o644)
 				slog.Info("Sub-Store 前端已更新", "version", ftag)
-				updatedFrontend = true
-				newFrontendVer = ftag
+				result.UpdatedFrontend = true
+				result.NewFrontendVer = ftag
 			} else {
 				slog.Error("更新 Sub-Store 前端失败", "error", err)
 			}
@@ -154,20 +159,8 @@ func UpdateSubStoreAssets() error {
 		slog.Error("获取 Sub-Store 前端版本失败", "error", err)
 	}
 
-	// 3. 重启 Node 进程应用新脚本
-	if updatedBackend {
-		slog.Info("后端已更新，正在重启 Sub-Store 服务...")
-		if err := KillNode(); err != nil {
-			slog.Error("NodeJS 进程结束错误", "error", err)
-		}
-	}
-
-	// 4. 触发通知（仅在至少有一端更新成功时才通知）
-	if updatedBackend || updatedFrontend {
-		utils.SendNotifySubStoreAssets(updatedFrontend, newFrontendVer, updatedBackend, newBackendVer)
-	}
-
-	return nil
+	// 移除了 utils.SendNotifySubStoreAssets，交由外部处理
+	return result, nil
 }
 
 // getLatestRelease 智能获取代理后的下载地址，包含 API 请求防挂回退
