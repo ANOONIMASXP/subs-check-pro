@@ -3,6 +3,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"html/template"
@@ -64,8 +65,9 @@ var publicStaticFileList = []struct {
 var (
 	initAPIKey string
 	geneAPIKey string
-	// 标记 SubStore 是否正在后台更新
-	subStoreSyncing atomic.Bool
+
+	subStoreSyncing  atomic.Bool // 标记 SubStore 是否正在后台同步
+	subStoreUpdating atomic.Bool // 标记 SubStore 是否正在后台更新
 )
 
 func init() {
@@ -318,6 +320,7 @@ func (app *App) registerAPIRoutes(router *gin.Engine) {
 		api.GET("/analysis-report", app.getAnalysisReport)
 		api.POST("/proxy/check", app.proxyCheckHandler)
 		api.POST("/notify/test", app.notifyTestHandler)
+		api.POST("/substore/update", app.updateSubStoreHandler)
 	}
 }
 
@@ -405,11 +408,11 @@ func (app *App) updateConfig(c *gin.Context) {
 		return
 	}
 
-	hasSubStoreUpdate := doSub || doMihomo || doLatest || doOld
+	hasSubStoreSync := doSub || doMihomo || doLatest || doOld
 	needGetGhProxy := doMihomo || doLatest || doOld
 
 	// 在保存接口内直接启动异步无阻塞 goroutine，彻底剔除前端发起的更新 api 和轮询开销
-	if hasSubStoreUpdate {
+	if hasSubStoreSync {
 		subStoreSyncing.Store(true) // 开启后台更新标记
 		go func() {
 			// 无论执行成功或失败，结束时重置后台更新标记
@@ -436,7 +439,7 @@ func (app *App) updateConfig(c *gin.Context) {
 
 				// 打印日志，格式如: msg="已触发 sub-store 后台更新" name="sub丨mihomo"
 				slog.Info("已触发 sub-store 后台更新", "name", strings.Join(targets, "丨"))
-				utils.UpdateSubStorePartial(nil, doSub, doMihomo, doLatest, doOld)
+				utils.SyncSubStorePartial(nil, doSub, doMihomo, doLatest, doOld)
 			}
 		}()
 	}
@@ -444,7 +447,7 @@ func (app *App) updateConfig(c *gin.Context) {
 	// 响应结果给前端让它出 UI 提示
 	c.JSON(http.StatusOK, gin.H{
 		"message":               "配置已保存",
-		"substore_syncing":      hasSubStoreUpdate,
+		"substore_syncing":      hasSubStoreSync,
 		"substore_need_ghproxy": needGetGhProxy,
 	})
 }
@@ -479,7 +482,8 @@ func (app *App) getStatus(c *gin.Context) {
 		"processResults":    check.ProcessResults.Load(),
 		"lastCheck":         lastCheck,
 		"isSubStoreRunning": assets.IsSubStoreRunning.Load(),
-		"subStoreSyncing":   subStoreSyncing.Load(),  // 将后台更新状态暴露给前端
+		"subStoreSyncing":   subStoreSyncing.Load(),  // 配置文件同步状态
+		"subStoreUpdating":  subStoreUpdating.Load(), // 程序资源升级状态
 		"eta":               check.ETASeconds.Load(), // -1=计算中, 0=完成, >0=剩余秒
 
 		"subStorePort":  config.GlobalConfig.SubStorePort,
@@ -497,6 +501,63 @@ func (app *App) triggerCheckHandler(c *gin.Context) {
 func (app *App) forceCloseHandler(c *gin.Context) {
 	check.ForceClose.Store(true)
 	c.JSON(http.StatusOK, gin.H{"message": "已强制关闭"})
+}
+
+func (app *App) updateSubStoreHandler(c *gin.Context) {
+	// 使用 CompareAndSwap 防止重复并发触发
+	if !subStoreUpdating.CompareAndSwap(false, true) {
+		c.JSON(http.StatusConflict, gin.H{"error": "Sub-Store 正在更新中，请稍后再试"})
+		return
+	}
+
+	// 异步执行更新逻辑，防止阻塞前端 HTTP 响应
+	go func() {
+		// 完成后重置升级状态
+		defer subStoreUpdating.Store(false)
+
+		// 加上互斥锁，避免与后台的定时更新任务产生冲突
+		app.updateMu.Lock()
+		defer app.updateMu.Unlock()
+
+		slog.Info("收到手动触发请求，正在检查更新 Sub-Store 前后端...")
+		result, err := assets.UpdateSubStoreAssets()
+		if err != nil {
+			slog.Error("Sub-Store 手动更新失败", "error", err)
+			return
+		}
+
+		if result != nil && (result.UpdatedBackend || result.UpdatedFrontend) {
+			// 如果后端已更新，进行服务重启
+			if result.UpdatedBackend {
+				if !app.checking.Load() {
+					slog.Info("Sub-Store 服务重启中...")
+					if app.cancel != nil {
+						app.cancel() // 关闭当前的上下文，停止旧的子协程
+						time.Sleep(500 * time.Millisecond)
+						if err := assets.KillNode(); err != nil {
+							slog.Error("强制清理 node 失败", "err", err)
+						}
+						app.ctx, app.cancel = context.WithCancel(context.Background())
+					}
+					go assets.RunSubStoreService(app.ctx)
+				} else {
+					slog.Warn("当前正在执行代理检测，跳过重启 Sub-Store 服务，新后端将在下次启动时生效")
+				}
+			}
+
+			// 触发已聚合在 APP 层的通知系统
+			utils.SendNotifySubStoreAssets(
+				result.UpdatedFrontend, result.NewFrontendVer,
+				result.UpdatedBackend, result.NewBackendVer,
+			)
+			slog.Info("Sub-Store 手动更新完成")
+		} else {
+			slog.Info("Sub-Store 前后端已是最新版本，无需升级")
+		}
+	}()
+
+	// 立即响应 200，前端轮询 /api/status 看到 subStoreUpdating = true 即可显示对应特效
+	c.JSON(http.StatusOK, gin.H{"message": "已在后台启动程序升级流程，请查看日志获取详细进度"})
 }
 
 // getLogs 获取日志
