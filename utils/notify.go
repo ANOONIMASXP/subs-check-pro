@@ -32,10 +32,11 @@ type NotifyTestResult struct {
 }
 
 const (
-	NotifyNodeStatus  NotifyKind = iota // 节点状态
-	NotifyGeoDBUpdate                   // GeoDB 更新
-	NotifySelfUpdate                    // 程序自更新
-	NotifyNewRelease                    // 新版本通知
+	NotifyNodeStatus           NotifyKind = iota // 节点状态
+	NotifyGeoDBUpdate                            // GeoDB 更新
+	NotifySubStoreAssetsUpdate                   // Sub-Store 资源更新
+	NotifySelfUpdate                             // 程序自更新
+	NotifyNewRelease                             // 新版本通知
 )
 
 const (
@@ -74,8 +75,14 @@ func decorateURL(raw string, kind NotifyKind, downloadURL string) string {
 		return raw
 	}
 
-	scheme := strings.ToLower(parts[0]) // 获取协议头，转小写以便 switch 匹配
-	rest := parts[1]                    // 剩余部分 (包含 host, path, query)
+	// 处理 Apprise 的标签前缀 (例如 "1:alerts=bark" -> 提取出 "bark")
+	schemePart := parts[0]
+	if eqIdx := strings.LastIndex(schemePart, "="); eqIdx != -1 {
+		schemePart = schemePart[eqIdx+1:]
+	}
+	scheme := strings.ToLower(schemePart)
+
+	rest := parts[1] // 剩余部分 (包含 host, path, query)
 
 	var body, queryStr string
 
@@ -112,6 +119,9 @@ func decorateURL(raw string, kind NotifyKind, downloadURL string) string {
 		case NotifyGeoDBUpdate:
 			q.Set("group", "geodb")
 			q.Set("category", "数据库更新")
+		case NotifySubStoreAssetsUpdate:
+			q.Set("group", "sub-store")
+			q.Set("category", "Sub-Store资源更新")
 		case NotifySelfUpdate:
 			q.Set("group", "selfupdate")
 			q.Set("category", "程序更新")
@@ -130,6 +140,8 @@ func decorateURL(raw string, kind NotifyKind, downloadURL string) string {
 			q.Set("tags", "subs-check-pro,node-status")
 		case NotifyGeoDBUpdate:
 			q.Set("tags", "subs-check-pro,geodb-update")
+		case NotifySubStoreAssetsUpdate:
+			q.Set("tags", "subs-check-pro,sub-store-update")
 		case NotifySelfUpdate:
 			q.Set("tags", "subs-check-pro,self-update")
 		}
@@ -154,7 +166,8 @@ func decorateURL(raw string, kind NotifyKind, downloadURL string) string {
 	if newQuery == "" {
 		return parts[0] + "://" + body
 	}
-	return parts[0] + "://" + body + "?" + newQuery
+
+	return schemePart + "://" + body + "?" + newQuery
 }
 
 // getClient 按 proxyURL 返回已缓存的 HTTP/2 客户端，不存在则创建并缓存
@@ -380,8 +393,8 @@ func SendNotifySubStoreAssets(frontendUpdated bool, frontendVer string, backendU
 
 	body := strings.Join(lines, "  \n")
 
-	// 发送通知 (借用 NotifyGeoDBUpdate 的 group 归类)
-	broadcastNotify(NotifyGeoDBUpdate, title, body, "")
+	// 发送通知
+	broadcastNotify(NotifySubStoreAssetsUpdate, title, body, "")
 }
 
 // SendNotifyGeoDBUpdate 发送 GeoDB 更新通知
