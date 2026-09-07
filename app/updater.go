@@ -41,8 +41,11 @@ func getArch() string {
 // 创建 GitHub 客户端
 func newGitHubClient(useToken bool) (*selfupdate.GitHubSource, error) {
 	cfg := selfupdate.GitHubConfig{}
-	if useToken && config.GlobalConfig.GithubToken != "" {
-		cfg.APIToken = config.GlobalConfig.GithubToken
+	token := config.GlobalConfig.GithubToken
+	hasValidToken := utils.IsValidGitHubToken(token)
+
+	if useToken && hasValidToken {
+		cfg.APIToken = token
 	}
 	return selfupdate.NewGitHubSource(cfg)
 }
@@ -242,14 +245,19 @@ func tryUpdateOnce(parentCtx context.Context, latest *selfupdate.Release,
 
 // detectLatestRelease 探测最新版本并判断是否需要更新
 func (app *App) detectLatestRelease() (*selfupdate.Release, bool, error) {
+	token := config.GlobalConfig.GithubToken
+	hasValidToken := utils.IsValidGitHubToken(token)
+
 	// 清除系统代理
-	if config.GlobalConfig.GithubToken == "" {
+	if hasValidToken {
 		isSysProxy = utils.GetSysProxy()
+	} else {
+		utils.UnsetAllProxyEnvVars()
 	}
 
 	ctx := context.Background()
 	// Detect 调用的是 GitHub 官方 API 接口，强制使用 Token 以防止限流
-	client, err := newGitHubClient(true)
+	client, err := newGitHubClient(hasValidToken)
 	if err != nil {
 		return nil, false, fmt.Errorf("创建 GitHub 客户端失败: %w", err)
 	}
@@ -308,10 +316,6 @@ func (app *App) detectLatestRelease() (*selfupdate.Release, bool, error) {
 func (app *App) CheckUpdateAndRestart(silentUpdate bool) {
 	ctx := context.Background()
 
-	if config.GlobalConfig.GithubToken != "" {
-		isSysProxy = utils.GetSysProxy()
-	}
-
 	latest, needUpdate, err := app.detectLatestRelease()
 	if err != nil {
 		slog.Error("探测最新版本失败", slog.Any("err", err))
@@ -322,9 +326,7 @@ func (app *App) CheckUpdateAndRestart(silentUpdate bool) {
 	}
 
 	// 更新前检测系统代理环境
-	if config.GlobalConfig.GithubToken == "" {
-		isSysProxy = utils.GetSysProxy()
-	}
+	isSysProxy = utils.GetSysProxy()
 
 	// 开发版逻辑：不更新，只提示
 	if strings.HasPrefix(app.version, "dev") {
