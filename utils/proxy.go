@@ -136,6 +136,10 @@ func UnsetAllProxyEnvVars() {
 	} {
 		os.Unsetenv(key)
 	}
+	// 强制关闭 HTTP 空闲长连接，确保代理环境变量更改立即对后续的默认 Client 生效
+	if t, ok := http.DefaultTransport.(*http.Transport); ok {
+		t.CloseIdleConnections()
+	}
 }
 
 // GetGhProxy 检测 github 代理是否可用，并设置可用的 github 代理
