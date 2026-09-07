@@ -145,7 +145,17 @@ func UpdateGeoLite2DB() error {
 
 	apiURL := "https://api.github.com/repos/mojolabs-id/GeoLite2-Database/releases/latest"
 
-	resp, err := http.Get(apiURL)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	token := config.GlobalConfig.GithubToken
+
+	// GitHub 域名：使用 Token 提升速率限制 (未认证 60次/h → 认证 5000次/h)
+	utils.InjectGitHubToken(req, token)
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("获取 release 信息失败: %w", err)
 	}
