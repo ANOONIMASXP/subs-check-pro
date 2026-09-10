@@ -17,7 +17,8 @@ LABEL org.opencontainers.image.title="subs-check-pro" \
     org.opencontainers.image.vendor="sinspired" \
     org.opencontainers.image.authors="Sinspired https://github.com/sinspired"
 
-COPY subs-check-pro /app/subs-check-pro
+ARG TARGETPLATFORM
+COPY --chmod=755 ${TARGETPLATFORM}/subs-check-pro /app/subs-check-pro
 
 EXPOSE 8199 8299
 
