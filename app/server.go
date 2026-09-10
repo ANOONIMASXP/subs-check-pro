@@ -25,10 +25,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-yaml"
 	"github.com/sinspired/subs-check-pro-webui/webui"
-	"github.com/sinspired/subs-check-pro/v2/assets"
 	"github.com/sinspired/subs-check-pro/v2/check"
 	"github.com/sinspired/subs-check-pro/v2/config"
 	"github.com/sinspired/subs-check-pro/v2/save/method"
+	"github.com/sinspired/subs-check-pro/v2/substore"
 	"github.com/sinspired/subs-check-pro/v2/utils"
 )
 
@@ -433,7 +433,7 @@ func (app *App) updateConfig(c *gin.Context) {
 			// 无论执行成功或失败，结束时重置后台更新标记
 			defer subStoreSyncing.Store(false)
 
-			if config.GlobalConfig.SubStorePort != "" && assets.IsSubStoreRunning.Load() {
+			if config.GlobalConfig.SubStorePort != "" && substore.IsSubStoreRunning.Load() {
 				// 等待500ms确保后端的 filewatcher（如 fsnotify）已将最新文件重载进 config.GlobalConfig 中
 				time.Sleep(500 * time.Millisecond)
 
@@ -500,7 +500,7 @@ func (app *App) getStatus(c *gin.Context) {
 		"successlimited":    check.Successlimited.Load(),
 		"processResults":    check.ProcessResults.Load(),
 		"lastCheck":         lastCheck,
-		"isSubStoreRunning": assets.IsSubStoreRunning.Load(),
+		"isSubStoreRunning": substore.IsSubStoreRunning.Load(),
 		"subStoreSyncing":   subStoreSyncing.Load(),  // 配置文件同步状态
 		"subStoreUpdating":  subStoreUpdating.Load(), // 程序资源更新状态
 		"subStoreUpdateMsg": updateMsg,
@@ -545,7 +545,7 @@ func (app *App) updateSubStoreHandler(c *gin.Context) {
 		defer app.updateMu.Unlock()
 
 		slog.Info("Sub-Store 触发手动更新检查...")
-		result, err := assets.UpdateSubStoreAssets()
+		result, err := substore.UpdateSubStoreAssets()
 
 		var finalMsg string
 		if err != nil {
@@ -556,14 +556,16 @@ func (app *App) updateSubStoreHandler(c *gin.Context) {
 				if !app.checking.Load() {
 					slog.Info("Sub-Store 服务 重启中...")
 					if app.cancel != nil {
-						app.cancel()
-						time.Sleep(500 * time.Millisecond)
-						if err := assets.KillNode(); err != nil {
-							slog.Error("强制清理 node 失败", "err", err)
+						app.cancel() // 发出关闭信号，RunSubStoreService 收到后会自动触发 Shutdown
+
+						// 使用确定性的端口释放等待
+						if !substore.WaitSubStoreStopped(5 * time.Second) {
+							slog.Warn("等待旧版 Sub-Store 释放端口超时，强制继续")
 						}
+
 						app.ctx, app.cancel = context.WithCancel(context.Background())
 					}
-					go assets.RunSubStoreService(app.ctx)
+					go substore.RunSubStoreService(app.ctx)
 				} else {
 					slog.Warn("当前正在执行代理检测，跳过重启 Sub-Store 服务，新后端将在下次启动时生效")
 				}

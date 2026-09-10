@@ -237,7 +237,7 @@ func (app *App) handleFileShare(basePath string, _ bool) gin.HandlerFunc {
 			return
 		}
 		if _, err := os.Stat(absPath); err != nil {
-			// ★ 修复：文件不存在时渲染错误页
+			// 文件不存在时渲染错误页
 			renderSharePage(c, http.StatusNotFound, SharePageData{
 				Title:       "文件未找到",
 				HeaderColor: "var(--danger)",

@@ -1,4 +1,4 @@
-// Package assets 嵌入的node、sub-store、MaxMind数据库等资产
+// Package assets 嵌入的资产文件
 package assets
 
 import (

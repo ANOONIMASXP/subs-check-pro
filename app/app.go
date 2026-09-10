@@ -21,11 +21,11 @@ import (
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/robfig/cron/v3"
 	"github.com/sinspired/subs-check-pro/v2/app/monitor"
-	"github.com/sinspired/subs-check-pro/v2/assets"
 	"github.com/sinspired/subs-check-pro/v2/check"
 	"github.com/sinspired/subs-check-pro/v2/config"
 	proxyutils "github.com/sinspired/subs-check-pro/v2/proxy"
 	"github.com/sinspired/subs-check-pro/v2/save"
+	"github.com/sinspired/subs-check-pro/v2/substore"
 	"github.com/sinspired/subs-check-pro/v2/utils"
 )
 
@@ -152,28 +152,23 @@ func (app *App) Initialize() error {
 	}
 
 	if config.GlobalConfig.SubStorePort != "" {
-		if runtime.GOOS == "linux" && runtime.GOARCH == "386" {
-			slog.Warn("Node.js 不支持 Linux 32位架构，Sub-Store 服务未启动")
+		// Sub-Store 服务启动时,Singbox 版本号才有意义
+		utils.InitSingboxVersion()
+
+		subStoreAddr := normalizeListenAddr(config.GlobalConfig.SubStorePort)
+		if !subStorePortAvailable {
+			substore.IsSubStoreRunning.Store(false)
+			slog.Warn("Sub-Store 端口已被其他进程占用，Sub-Store 服务未启动，请修改端口后重启",
+				"addr", subStoreAddr)
 		} else {
-
-			// Sub-Store 服务启动时,Singbox 版本号才有意义
-			utils.InitSingboxVersion()
-
-			subStoreAddr := normalizeListenAddr(config.GlobalConfig.SubStorePort)
-			if !subStorePortAvailable {
-				assets.IsSubStoreRunning.Store(false)
-				slog.Warn("Sub-Store 端口已被其他进程占用，Sub-Store 服务未启动，请修改端口后重启",
-					"addr", subStoreAddr)
-			} else {
-				// 使用 app.ctx 启动 sub-store，让其可被取消
-				go assets.RunSubStoreService(app.ctx)
-				// 短暂等待，保证 Sub-Store 启动日志按预期顺序输出
-				time.Sleep(500 * time.Millisecond)
-			}
+			// 使用 app.ctx 启动 sub-store，让其可被取消
+			go substore.RunSubStoreService(app.ctx)
+			// 短暂等待，保证 Sub-Store 启动日志按预期顺序输出
+			time.Sleep(500 * time.Millisecond)
 		}
 	} else {
 		slog.Warn("Sub-Store 服务已禁用", "port", "未设置")
-		assets.IsSubStoreRunning.Store(false)
+		substore.IsSubStoreRunning.Store(false)
 	}
 
 	// 启动内存监控
@@ -181,13 +176,14 @@ func (app *App) Initialize() error {
 
 	// 注册退出前清理逻辑（兜底）
 	utils.BeforeExitHook = func() {
-		NodeAlive, err := assets.FindNode()
-		if err == nil && NodeAlive {
-			slog.Warn("强制退出前，尝试清理 node 子进程")
-			if err := assets.KillNode(); err != nil {
-				slog.Error("强制清理 node 失败", "err", err)
+		// 检查内置 Sub-Store 服务是否仍在运行
+		if substore.IsSubStoreRunning.Load() {
+			slog.Warn("强制退出前，尝试关闭 Sub-Store 内置服务及释放端口")
+			if err := substore.StopSubStore(); err != nil {
+				slog.Error("强制停止 Sub-Store 服务失败", "err", err)
+			} else {
+				slog.Info("Sub-Store 服务已成功停止，端口已释放")
 			}
-			slog.Warn("程序未正常退出，强制停止")
 		}
 	}
 

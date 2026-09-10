@@ -26,6 +26,10 @@ jobs:
         with:
           go-version: stable
 
+      # 引入 Zig 以支持 GoReleaser 零依赖 CGO 跨平台编译
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+
       - name: Setup UPX
         uses: crazy-max/ghaction-upx@v4
         with:

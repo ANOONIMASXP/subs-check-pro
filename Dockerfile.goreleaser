@@ -1,28 +1,9 @@
-# 提取 glibc 运行时依赖和时区、证书
-FROM debian:bookworm-slim AS provider
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libatomic1 libstdc++6 libgcc-s1 \
-    ca-certificates \
-    tzdata \
-    && rm -rf /var/lib/apt/lists/*
-
-# 最终镜像
-FROM busybox:glibc
-
-ARG TARGETPLATFORM
-
-WORKDIR /app
+FROM alpine:latest
 
 # 注入时区和证书
-COPY --from=provider /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=provider /usr/share/zoneinfo                 /usr/share/zoneinfo
+RUN apk add --no-cache ca-certificates tzdata
 
-# 注入动态链接库
-COPY --from=provider /usr/lib/*-linux-*/libgcc_s.so.1   /lib/
-COPY --from=provider /usr/lib/*-linux-*/libstdc++.so.6* /lib/
-COPY --from=provider /usr/lib/*-linux-*/libatomic.so.1* /lib/
-COPY --from=provider /usr/lib/*-linux-*/libdl.so.2      /lib/
+WORKDIR /app
 
 ENV TZ=Asia/Shanghai
 ENV RUNNING_IN_DOCKER=true
@@ -36,9 +17,8 @@ LABEL org.opencontainers.image.title="subs-check-pro" \
     org.opencontainers.image.vendor="sinspired" \
     org.opencontainers.image.authors="Sinspired https://github.com/sinspired"
 
-COPY --chmod=755 ${TARGETPLATFORM}/subs-check-pro /app/subs-check-pro
+COPY subs-check-pro /app/subs-check-pro
 
-EXPOSE 8199
-EXPOSE 8299
+EXPOSE 8199 8299
 
 CMD ["/app/subs-check-pro"]

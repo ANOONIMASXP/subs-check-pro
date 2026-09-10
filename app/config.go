@@ -11,8 +11,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/goccy/go-yaml"
-	"github.com/sinspired/subs-check-pro/v2/assets"
 	"github.com/sinspired/subs-check-pro/v2/config"
+	"github.com/sinspired/subs-check-pro/v2/substore"
 	"github.com/sinspired/subs-check-pro/v2/utils"
 )
 
@@ -277,29 +277,20 @@ func (app *App) onConfigChange() {
 	switch {
 	case oldSubStorePort != "" && config.GlobalConfig.SubStorePort != "" && oldSubStorePort != config.GlobalConfig.SubStorePort:
 		// 端口变更 → 重启
-		slog.Debug("重启 sub-store（端口变更）")
-		if app.cancel != nil && !app.checking.Load() {
-			app.cancel()
-			time.Sleep(500 * time.Millisecond)
-			if err := assets.KillNode(); err != nil {
-				slog.Error("强制清理 node 失败", "err", err)
-			}
-			app.ctx, app.cancel = context.WithCancel(context.Background())
+		slog.Info("Sub-Store 端口变更", "old", oldSubStorePort, "new", config.GlobalConfig.SubStorePort)
+		if err := substore.ReStartSubStore(app.ctx); err != nil {
+			slog.Error("Sub-Store 重启失败", "error", err)
 		}
-		go assets.RunSubStoreService(app.ctx)
 
 	case oldSubStorePort == "" && config.GlobalConfig.SubStorePort != "":
 		// 首次配置端口 → 启动
 		slog.Debug("启动 sub-store")
-		go assets.RunSubStoreService(app.ctx)
+		go substore.RunSubStoreService(app.ctx)
 
 	case oldSubStorePort != "" && config.GlobalConfig.SubStorePort == "":
 		// 端口被清空 → 停止
-		slog.Debug("停止 sub-store（端口已清空）")
-		if app.cancel != nil && !app.checking.Load() {
-			app.cancel()
-			app.ctx, app.cancel = context.WithCancel(context.Background())
-		}
+		substore.StopSubStore()
+		slog.Info("Sub-Store 服务已禁用", "port", "未设置")
 	}
 
 	// 去掉开头斜杠以进行比对
@@ -313,35 +304,28 @@ func (app *App) onConfigChange() {
 				slog.Info("从环境变量获取sub-store路径", "sub-store-path", subStorePath)
 				config.GlobalConfig.SubStorePath = subStorePath
 				// 重启sub-store服务
-				if app.cancel != nil {
-					app.cancel()
-					app.ctx, app.cancel = context.WithCancel(context.Background())
+				if err := substore.ReStartSubStore(app.ctx); err != nil {
+					slog.Error("Sub-Store 重启失败", "error", err)
 				}
-				go assets.RunSubStoreService(app.ctx)
 			}
 		} else {
-			if assets.InitSubStorePath != "" {
-				slog.Warn("sub-store路径发生变化，正在重启sub-store服务")
+			if substore.InitSubStorePath != "" {
+				slog.Warn("Sub-Store 路径清空，将使用随机路径")
 				config.GlobalConfig.SubStorePath = utils.GenerateRandomString(20)
 				slog.Info("已随机生成", "sub-store-path", config.GlobalConfig.SubStorePath)
-
-				if app.cancel != nil {
-					app.cancel()
-					app.ctx, app.cancel = context.WithCancel(context.Background())
+				if err := substore.ReStartSubStore(app.ctx); err != nil {
+					slog.Error("Sub-Store 重启失败", "error", err)
 				}
-				go assets.RunSubStoreService(app.ctx)
 			} else {
 				config.GlobalConfig.SubStorePath = oldSubStorePath
 				slog.Debug("保留首次运行自动生成的sub-store路径", "sub-store-path", config.GlobalConfig.SubStorePath)
 			}
 		}
 	} else if oldSubStorePath != config.GlobalConfig.SubStorePath {
-		slog.Warn("sub-store路径发生变化，正在重启sub-store服务")
-		if app.cancel != nil {
-			app.cancel()
-			app.ctx, app.cancel = context.WithCancel(context.Background())
+		slog.Warn("sub-store路径发生变化", "path", config.GlobalConfig.SubStorePath)
+		if err := substore.ReStartSubStore(app.ctx); err != nil {
+			slog.Error("Sub-Store 重启失败", "error", err)
 		}
-		go assets.RunSubStoreService(app.ctx)
 	}
 
 	// 检查测活/测速调度（主测速流程调度）是否发生变化

@@ -1,3 +1,8 @@
+# 忽略前端依赖和构建产物
+node_modules/
+**/node_modules/
+.pnpm-store/
+
 openipdb.ipdb
 config.yaml
 mihomo.yaml
@@ -18,7 +23,8 @@ mihomo-check*
 *.zip
 *.gz
 *.tar
-bin/*
+bin/
+dist/
 test_*.*
 test_*/
 speed_*.csv
@@ -28,6 +34,11 @@ speed_*.csv
 
 *.exe
 *.syso
+*.test
 .wiki/
+
+# 忽略 IDE 缓存
+.idea/
+.vscode/
 
 !Subs-Check-PRO_OG.png

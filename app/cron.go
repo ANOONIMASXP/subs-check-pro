@@ -10,6 +10,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/sinspired/subs-check-pro/v2/assets"
 	"github.com/sinspired/subs-check-pro/v2/config"
+	"github.com/sinspired/subs-check-pro/v2/substore"
 	"github.com/sinspired/subs-check-pro/v2/utils"
 )
 
@@ -193,7 +194,7 @@ func (app *App) UpdateSubStoreCron() {
 
 			slog.Debug("定时检查并更新 Sub-Store 前后端...")
 			// 接收更新结果对象
-			result, err := assets.UpdateSubStoreAssets()
+			result, err := substore.UpdateSubStoreAssets()
 			if err != nil {
 				slog.Error("更新 Sub-Store 失败", "error", err)
 				return
@@ -206,14 +207,16 @@ func (app *App) UpdateSubStoreCron() {
 					if !app.checking.Load() {
 						slog.Info("Sub-Store 服务 重启中...")
 						if app.cancel != nil {
-							app.cancel()
-							time.Sleep(500 * time.Millisecond)
-							if err := assets.KillNode(); err != nil {
-								slog.Error("强制清理 node 失败", "err", err)
+							app.cancel() // 发出关闭信号，RunSubStoreService 收到后会自动触发 Shutdown
+
+							// 使用确定性的端口释放等待
+							if !substore.WaitSubStoreStopped(5 * time.Second) {
+								slog.Warn("等待旧版 Sub-Store 释放端口超时，强制继续")
 							}
+							
 							app.ctx, app.cancel = context.WithCancel(context.Background())
 						}
-						go assets.RunSubStoreService(app.ctx)
+						go substore.RunSubStoreService(app.ctx)
 					} else {
 						slog.Warn("当前正在执行代理检测，跳过重启 Sub-Store 服务，新后端将在下次启动时生效")
 					}

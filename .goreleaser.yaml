@@ -64,30 +64,68 @@ changelog:
 
 # 构建配置
 builds:
-  - id: subs-check-pro
+  # 1. Linux 构建组 (使用 musl 进行静态链接)
+  - id: subs-check-pro-linux
+    binary: subs-check-pro
     env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
+      # 根据架构动态切换 Zig target
+      - CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64-linux-musl{{ else if eq .Arch "arm64" }}aarch64-linux-musl{{ else if eq .Arch "arm" }}arm-linux-musleabihf{{ else if eq .Arch "mipsle" }}mipsel-linux-musl{{ end }}
+      - CXX=zig c++ -target {{ if eq .Arch "amd64" }}x86_64-linux-musl{{ else if eq .Arch "arm64" }}aarch64-linux-musl{{ else if eq .Arch "arm" }}arm-linux-musleabihf{{ else if eq .Arch "mipsle" }}mipsel-linux-musl{{ end }}
     targets:
       # Desktop / Server
       - linux_amd64
       - linux_arm64
       - linux_arm_7
-      - windows_amd64
-      - windows_arm64
-      - darwin_amd64
-      - darwin_arm64
-      # openwrt / 路由器
       - linux_mipsle_softfloat
     mod_timestamp: "{{ .CommitTimestamp }}"
     flags:
       - -trimpath
+      # 添加 tags 强制 Go 使用内置 DNS 解析，防止在没有 glibc 的系统上 DNS 解析失败
+      - -tags=netgo,osusergo
     ldflags:
+      - -s -w -extldflags "-static -Wl,-z,stack-size=8388608" -X main.Version={{ .Version }} -X main.CurrentCommit={{ .ShortCommit }}
+
+  # 2. Windows 构建组 (使用 gnu 兼容层)
+  - id: subs-check-pro-windows
+    binary: subs-check-pro
+    env:
+      - CGO_ENABLED=1
+      - CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64-windows-gnu{{ else }}aarch64-windows-gnu{{ end }}
+      - CXX=zig c++ -target {{ if eq .Arch "amd64" }}x86_64-windows-gnu{{ else }}aarch64-windows-gnu{{ end }}
+    targets:
+      - windows_amd64
+      - windows_arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+    ldflags:
+      # 切断对 Windows C 运行库的依赖
+      - -s -w -extldflags "-static" -X main.Version={{ .Version }} -X main.CurrentCommit={{ .ShortCommit }}
+
+  # 3. macOS 构建组 (苹果禁止静态链接，所以移除 -static 参数)
+  - id: subs-check-pro-darwin
+    binary: subs-check-pro
+    env:
+      - CGO_ENABLED=1
+      - CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64-macos{{ else }}aarch64-macos{{ end }}
+      - CXX=zig c++ -target {{ if eq .Arch "amd64" }}x86_64-macos{{ else }}aarch64-macos{{ end }}
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+    ldflags:
+      # macOS 绝对不能加 -extldflags "-static"
       - -s -w -X main.Version={{ .Version }} -X main.CurrentCommit={{ .ShortCommit }}
 
 # 归档配置
 archives:
   - ids:
-      - subs-check-pro
+      - subs-check-pro-linux
+      - subs-check-pro-windows
+      - subs-check-pro-darwin
     formats:
       - tar.gz
     name_template: >-
@@ -105,6 +143,8 @@ archives:
 # Docker 镜像多架构自动打包与分发
 dockers_v2:
   - id: subs-check-pro
+    # 明确告诉 Docker 构建只取用 Linux 系列的产物
+    ids: [subs-check-pro-linux]
     # 使用专用 Dockerfile 文件
     dockerfile: Dockerfile.goreleaser
     # 同时发布到 GitHub Container Registry 和 Docker Hub
@@ -132,21 +172,19 @@ dockers_v2:
       "org.opencontainers.image.revision": "{{ .FullCommit }}"
       "org.opencontainers.image.version": "{{ .Version }}"
       "org.opencontainers.image.source": "{{.GitURL}}"
-
       "org.opencontainers.image.base.name": "{{.BaseImage}}"
       "org.opencontainers.image.base.digest": "{{.BaseImageDigest}}"
-
     # 正式版本创建物料清单 (SBOM)，预发布版本跳过
     sbom: "{{ not .IsNightly }}"
 
 # 压缩可执行文件
 upx:
-  - ids: [subs-check-pro]
+  - ids: [subs-check-pro-linux]
     enabled: true
     goos: [linux]
     goarch: [amd64, arm64, arm]
 
-  - ids: [subs-check-pro]
+  - ids: [subs-check-pro-windows]
     enabled: true
     goos: [windows]
     goarch: [amd64]

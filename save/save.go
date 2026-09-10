@@ -15,10 +15,10 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/sinspired/subs-check-pro/v2/assets"
 	"github.com/sinspired/subs-check-pro/v2/check"
 	"github.com/sinspired/subs-check-pro/v2/config"
 	"github.com/sinspired/subs-check-pro/v2/save/method"
+	"github.com/sinspired/subs-check-pro/v2/substore"
 	"github.com/sinspired/subs-check-pro/v2/utils"
 )
 
@@ -39,9 +39,21 @@ type ConfigSaver struct {
 
 // localClient 用于本地 SubStore 请求
 var localClient = &http.Client{
-	Timeout: 15 * time.Second,
+	Timeout: 30 * time.Second,
 	Transport: &http.Transport{
-		Proxy: nil, // 本地请求不走任何代理
+		Proxy: nil,
+
+		// 强制 HTTP/1.1，避免本地服务对 HTTP/2 支持不完整
+		ForceAttemptHTTP2: false,
+
+		// 大连接池，避免 TIME_WAIT 导致失败
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+
+		// 更快的连接建立
+		DisableKeepAlives:  false,
+		DisableCompression: false,
 	},
 }
 
@@ -161,7 +173,7 @@ func (cs *ConfigSaver) generateAllYaml(proxies []map[string]any) ([]byte, error)
 	}
 
 	// 仅在执行本地保存，且 SubStore 运行时触发 SubStore 更新
-	if cs.methodName == "local" && config.GlobalConfig.SubStorePort != "" && assets.IsSubStoreRunning.Load() {
+	if cs.methodName == "local" && config.GlobalConfig.SubStorePort != "" && substore.IsSubStoreRunning.Load() {
 		utils.SyncSubStore(yamlData)
 	}
 	return yamlData, nil
@@ -173,7 +185,7 @@ func (cs *ConfigSaver) generateMihomo(proxies []map[string]any) ([]byte, error) 
 	}
 
 	// 同时检查端口配置和运行状态，避免无效连接
-	if config.GlobalConfig.SubStorePort == "" || !assets.IsSubStoreRunning.Load() {
+	if config.GlobalConfig.SubStorePort == "" || !substore.IsSubStoreRunning.Load() {
 		return fallback()
 	}
 
@@ -199,7 +211,7 @@ func (cs *ConfigSaver) generateMihomo(proxies []map[string]any) ([]byte, error) 
 }
 
 func (cs *ConfigSaver) generateBase64() ([]byte, error) {
-	if config.GlobalConfig.SubStorePort == "" || !assets.IsSubStoreRunning.Load() {
+	if config.GlobalConfig.SubStorePort == "" || !substore.IsSubStoreRunning.Load() {
 		return nil, nil // 不满足条件直接跳过，不报错
 	}
 
