@@ -7,7 +7,9 @@ param(
     [string]$Commit,
     [switch]$Clean,
     [switch]$Debug,
-    [switch]$Experiment
+    [switch]$Experiment,
+    [switch]$Win,
+    [switch]$Lin
 )
 
 # --- 1. 配置 ---
@@ -74,12 +76,29 @@ $targets = @(
 # Debug 模式
 if ($Debug) {
     $Clean = $false
-    $targets = @(
-        @{ GOOS = "windows"; GOARCH = "amd64"; OutputFile = "$execName.exe" }
-        @{ GOOS = "linux"; GOARCH = "amd64"; OutputFile = "$execName" }
-    )
-    $targetList = $targets | ForEach-Object { "$($_.GOOS)/$($_.GOARCH)" }
-    Write-Host "🐞 Debug 模式，仅编译: $($targetList -join ', ')" -ForegroundColor Blue
+
+    if ($Win -and -not $Lin) {
+        # 仅 Windows
+        $targets = @(
+            @{ GOOS = "windows"; GOARCH = "amd64"; OutputFile = "$execName.exe" }
+        )
+        Write-Host "🐞 Debug 模式，仅编译 Windows/amd64" -ForegroundColor Blue
+    }
+    elseif ($Lin -and -not $Win) {
+        # 仅 Linux
+        $targets = @(
+            @{ GOOS = "linux"; GOARCH = "amd64"; OutputFile = "$execName" }
+        )
+        Write-Host "🐞 Debug 模式，仅编译 Linux/amd64" -ForegroundColor Blue
+    }
+    else {
+        # 默认：Windows + Linux
+        $targets = @(
+            @{ GOOS = "windows"; GOARCH = "amd64"; OutputFile = "$execName.exe" },
+            @{ GOOS = "linux"; GOARCH = "amd64"; OutputFile = "$execName" }
+        )
+        Write-Host "🐞 Debug：默认 Win+Lin（单独编译用 -Win / -Lin）" -ForegroundColor Blue
+    }
 }
 
 # --- 4. 开始编译 ---
@@ -176,15 +195,17 @@ try {
                 }
             }
 
-            # 打包
-            Write-Host "  -> 打包为: $relativeOutputDir/$archiveName.$archiveExt" -ForegroundColor DarkGray
-            if ($target.GOOS -eq "windows") {
-                Compress-Archive -Path "$platformDir/*" -DestinationPath $archivePath -Force
-            }
-            else {
-                Push-Location $outputDir
-                tar -czf $archivePath $platformIdentifier
-                Pop-Location
+            if (!$Debug) {
+                # 打包
+                Write-Host "  -> 打包为: $relativeOutputDir/$archiveName.$archiveExt" -ForegroundColor DarkGray
+                if ($target.GOOS -eq "windows") {
+                    Compress-Archive -Path "$platformDir/*" -DestinationPath $archivePath -Force
+                }
+                else {
+                    Push-Location $outputDir
+                    tar -czf $archivePath $platformIdentifier
+                    Pop-Location
+                }
             }
         }
         finally {
