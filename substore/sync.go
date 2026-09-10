@@ -824,6 +824,7 @@ func SyncSubStore(yamlData []byte) {
 
 // 判断是否需要做耗时的 GetGhProxy 探活
 func needGhProxy(doSub, doMihomo, doSbLatest, doSbOld bool) bool {
+	_ = doSub // 如果后续增加脚本自定义
 	if doMihomo && !utils.IsLocalURL(config.GlobalConfig.MihomoOverwriteURL) {
 		return true
 	}

@@ -377,9 +377,9 @@ func (app *App) triggerCheck() {
 // checkProxies 执行代理检测
 func (app *App) checkProxies() error {
 	if config.GlobalConfig.PrintProgress {
-		slog.Info("启动检测任务", "进度", "显示")
+		slog.Info("启动检测任务", "终端进度条", "显示")
 	} else {
-		slog.Info("启动检测任务", "进度", "隐藏")
+		slog.Info("启动检测任务", "终端进度条", "隐藏")
 	}
 
 	startTime := time.Now()
