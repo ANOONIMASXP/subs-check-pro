@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sinspired/subs-check-pro/v2/check"
-	"github.com/sinspired/subs-check-pro/v2/config"
+	"github.com/sinspired/subs-check-pro/v3/check"
+	"github.com/sinspired/subs-check-pro/v3/config"
 )
 
 // StatusData 包含当前检测的所有状态信息

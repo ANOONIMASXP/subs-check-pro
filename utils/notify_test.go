@@ -3,7 +3,7 @@ package utils
 import (
 	"testing"
 
-	"github.com/sinspired/subs-check-pro/v2/config"
+	"github.com/sinspired/subs-check-pro/v3/config"
 )
 
 var TestAPI = "https://apprise.xxxxxx.com/notify"

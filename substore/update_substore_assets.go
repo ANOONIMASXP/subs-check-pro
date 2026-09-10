@@ -16,8 +16,8 @@ import (
 
 	"github.com/buke/quickjs-go"
 	"github.com/goccy/go-json"
-	"github.com/sinspired/subs-check-pro/v2/config"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/config"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 const subStoreAssetName = "sub-store.min.js"
@@ -331,23 +331,23 @@ func (u *subStoreUpdater) downloadFile(rawURL, path, title string) error {
 		return fmt.Errorf("下载进度中断: %w", err)
 	}
 
-    // 通过 QuickJS 预编译验证脚本未损坏
-    scriptBytes, readErr := os.ReadFile(tmpPath)
-    if readErr == nil {
-        rt := quickjs.NewRuntime()
-        ctx := rt.NewContext()
-        // 尝试编译，仅做语法分析不执行，开销极低
-        _, compileErr := ctx.Compile(string(scriptBytes))
-        ctx.Close()
-        rt.Close()
+	// 通过 QuickJS 预编译验证脚本未损坏
+	scriptBytes, readErr := os.ReadFile(tmpPath)
+	if readErr == nil {
+		rt := quickjs.NewRuntime()
+		ctx := rt.NewContext()
+		// 尝试编译，仅做语法分析不执行，开销极低
+		_, compileErr := ctx.Compile(string(scriptBytes))
+		ctx.Close()
+		rt.Close()
 
-        if compileErr != nil {
-            _ = os.Remove(tmpPath)
-            return fmt.Errorf("下载的脚本存在语法错误或已损坏，拒绝替换: %w", compileErr)
-        }
-    }
+		if compileErr != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("下载的脚本存在语法错误或已损坏，拒绝替换: %w", compileErr)
+		}
+	}
 
-    // 成功且语法无误后，进行原子化覆写
+	// 成功且语法无误后，进行原子化覆写
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("替换新版本失败: %w", err)
 	}

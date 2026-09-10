@@ -25,11 +25,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-yaml"
 	"github.com/sinspired/subs-check-pro-webui/webui"
-	"github.com/sinspired/subs-check-pro/v2/check"
-	"github.com/sinspired/subs-check-pro/v2/config"
-	"github.com/sinspired/subs-check-pro/v2/save/method"
-	"github.com/sinspired/subs-check-pro/v2/substore"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/check"
+	"github.com/sinspired/subs-check-pro/v3/config"
+	"github.com/sinspired/subs-check-pro/v3/save/method"
+	"github.com/sinspired/subs-check-pro/v3/substore"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 const (

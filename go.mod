@@ -1,4 +1,4 @@
-module github.com/sinspired/subs-check-pro/v2
+module github.com/sinspired/subs-check-pro/v3
 
 go 1.27.0
 

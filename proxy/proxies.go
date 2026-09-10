@@ -20,10 +20,10 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/samber/lo"
-	"github.com/sinspired/subs-check-pro/v2/config"
-	"github.com/sinspired/subs-check-pro/v2/proxy/parse"
-	"github.com/sinspired/subs-check-pro/v2/save/method"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/config"
+	"github.com/sinspired/subs-check-pro/v3/proxy/parse"
+	"github.com/sinspired/subs-check-pro/v3/save/method"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 type SubUrls struct {
@@ -494,7 +494,7 @@ func fetchRemoteSubUrls(listURL string) ([]string, error) {
 //
 // 这个值不能脱离并发数单独调大。一个订阅 goroutine 同一时刻最多持有
 //
-/// (chanBuf + concurrency) × batchSize ≈ 100K
+// / (chanBuf + concurrency) × batchSize ≈ 100K
 // batchSize=1000, chanBuf=50, concurrency=50 → (50+50) × 1000 = 100K ✓
 const defaultParseBatchSize = 1000
 

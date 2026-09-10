@@ -7,7 +7,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/metacubex/mihomo/common/convert"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 // ParseSubscriptionDataStream 流式解析订阅数据，避免在单次调用内构造完整的

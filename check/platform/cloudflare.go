@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/convert"
-	"github.com/sinspired/subs-check-pro/v2/config"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/config"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 var CfCdnApis = []string{

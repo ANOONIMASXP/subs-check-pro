@@ -10,8 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-yaml"
-	"github.com/sinspired/subs-check-pro/v2/check"
-	"github.com/sinspired/subs-check-pro/v2/config"
+	"github.com/sinspired/subs-check-pro/v3/check"
+	"github.com/sinspired/subs-check-pro/v3/config"
 )
 
 // reportFallback 从分析报告中提取的兜底数据

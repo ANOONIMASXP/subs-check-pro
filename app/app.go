@@ -20,13 +20,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/robfig/cron/v3"
-	"github.com/sinspired/subs-check-pro/v2/app/monitor"
-	"github.com/sinspired/subs-check-pro/v2/check"
-	"github.com/sinspired/subs-check-pro/v2/config"
-	proxyutils "github.com/sinspired/subs-check-pro/v2/proxy"
-	"github.com/sinspired/subs-check-pro/v2/save"
-	"github.com/sinspired/subs-check-pro/v2/substore"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/app/monitor"
+	"github.com/sinspired/subs-check-pro/v3/check"
+	"github.com/sinspired/subs-check-pro/v3/config"
+	proxyutils "github.com/sinspired/subs-check-pro/v3/proxy"
+	"github.com/sinspired/subs-check-pro/v3/save"
+	"github.com/sinspired/subs-check-pro/v3/substore"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 // App 结构体用于管理应用程序状态

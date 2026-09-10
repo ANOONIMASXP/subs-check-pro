@@ -12,7 +12,7 @@ import (
 	"bytes"
 
 	"github.com/samber/lo"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 
 	"net/url"
 

@@ -1,9 +1,10 @@
 package parse
 
 import (
-	"github.com/sinspired/subs-check-pro/v2/utils"
 	"net/url"
 	"strings"
+
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 func SsLocalRequest(u *url.URL) bool {

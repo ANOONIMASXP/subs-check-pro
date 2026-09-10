@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"github.com/sinspired/subs-check-pro/v2/assets"
-	"github.com/sinspired/subs-check-pro/v2/config"
-	"github.com/sinspired/subs-check-pro/v2/substore"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/assets"
+	"github.com/sinspired/subs-check-pro/v3/config"
+	"github.com/sinspired/subs-check-pro/v3/substore"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 // 判断是否运行在 Docker 容器中
@@ -213,7 +213,7 @@ func (app *App) UpdateSubStoreCron() {
 							if !substore.WaitSubStoreStopped(5 * time.Second) {
 								slog.Warn("等待旧版 Sub-Store 释放端口超时，强制继续")
 							}
-							
+
 							app.ctx, app.cancel = context.WithCancel(context.Background())
 						}
 						go substore.RunSubStoreService(app.ctx)

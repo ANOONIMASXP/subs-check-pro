@@ -3,7 +3,7 @@ package method
 import (
 	"testing"
 
-	"github.com/sinspired/subs-check-pro/v2/config"
+	"github.com/sinspired/subs-check-pro/v3/config"
 )
 
 func TestUploadToS3(t *testing.T) {

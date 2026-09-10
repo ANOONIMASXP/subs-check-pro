@@ -19,10 +19,10 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/sinspired/subs-check-pro/v2/assets"
-	"github.com/sinspired/subs-check-pro/v2/config"
-	"github.com/sinspired/subs-check-pro/v2/save/method"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/assets"
+	"github.com/sinspired/subs-check-pro/v3/config"
+	"github.com/sinspired/subs-check-pro/v3/save/method"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 

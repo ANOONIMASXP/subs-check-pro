@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sinspired/subs-check-pro/v2/config"
-	proxyutils "github.com/sinspired/subs-check-pro/v2/proxy"
-	"github.com/sinspired/subs-check-pro/v2/save/method"
+	"github.com/sinspired/subs-check-pro/v3/config"
+	proxyutils "github.com/sinspired/subs-check-pro/v3/proxy"
+	"github.com/sinspired/subs-check-pro/v3/save/method"
 )
 
 var (

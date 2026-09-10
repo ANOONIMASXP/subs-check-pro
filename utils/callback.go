@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/sinspired/subs-check-pro/v2/config"
+	"github.com/sinspired/subs-check-pro/v3/config"
 )
 
 // ExecuteCallback 执行回调脚本

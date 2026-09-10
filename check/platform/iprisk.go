@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/metacubex/mihomo/common/convert"
-	"github.com/sinspired/subs-check-pro/v2/utils"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 func CheckIPRisk(httpClient *http.Client, ip string) (string, error) {
