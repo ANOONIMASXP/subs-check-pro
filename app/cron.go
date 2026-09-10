@@ -1,11 +1,9 @@
 package app
 
 import (
-
 	"log/slog"
 	"os"
 	"strings"
-
 
 	"github.com/robfig/cron/v3"
 	"github.com/sinspired/subs-check-pro/v3/assets"
@@ -202,13 +200,6 @@ func (app *App) UpdateSubStoreCron() {
 
 			// 如果有任何一端更新了
 			if result != nil && (result.UpdatedBackend || result.UpdatedFrontend) {
-
-				// 发送通知
-				utils.SendNotifySubStoreAssets(
-					result.UpdatedFrontend, result.NewFrontendVer,
-					result.UpdatedBackend, result.NewBackendVer,
-				)
-
 				// 组装成功信息
 				args := []any{}
 
@@ -224,6 +215,12 @@ func (app *App) UpdateSubStoreCron() {
 				}
 
 				slog.Info("Sub-Store 更新成功", args...)
+
+				// 发送通知
+				utils.SendNotifySubStoreAssets(
+					result.UpdatedFrontend, result.NewFrontendVer,
+					result.UpdatedBackend, result.NewBackendVer,
+				)
 			}
 		}
 	})

@@ -551,13 +551,6 @@ func (app *App) updateSubStoreHandler(c *gin.Context) {
 			slog.Error("更新 Sub-Store 失败", "error", err)
 			finalMsg = "更新 Sub-Store 失败: " + err.Error()
 		} else if result != nil && (result.UpdatedBackend || result.UpdatedFrontend) {
-
-			// 触发已聚合在 APP 层的通知系统
-			utils.SendNotifySubStoreAssets(
-				result.UpdatedFrontend, result.NewFrontendVer,
-				result.UpdatedBackend, result.NewBackendVer,
-			)
-
 			// 组装成功信息
 			var parts []string
 			args := []any{}
@@ -584,6 +577,12 @@ func (app *App) updateSubStoreHandler(c *gin.Context) {
 		subStoreUpdateMu.Lock()
 		subStoreUpdateMsg = finalMsg
 		subStoreUpdateMu.Unlock()
+
+		// 触发已聚合在 APP 层的通知系统
+		utils.SendNotifySubStoreAssets(
+			result.UpdatedFrontend, result.NewFrontendVer,
+			result.UpdatedBackend, result.NewBackendVer,
+		)
 	}()
 
 	// 立即响应 200，前端轮询 /api/status 看到 subStoreUpdating = true 即可显示对应特效
