@@ -164,7 +164,7 @@ func (cs *ConfigSaver) generateAllYaml(proxies []map[string]any) ([]byte, error)
 
 	// 仅在执行本地保存，且 SubStore 运行时触发 SubStore 更新
 	if cs.methodName == "local" && config.GlobalConfig.SubStorePort != "" && substore.IsSubStoreRunning.Load() {
-		utils.SyncSubStore(yamlData)
+		substore.SyncSubStore(yamlData)
 	}
 	return yamlData, nil
 }
@@ -176,7 +176,7 @@ func (cs *ConfigSaver) generateMihomo() ([]byte, error) {
 	}
 
 	// http://127.0.0.1:8299/download/sub?target=mihomo
-	targetURL := utils.BaseURL + "/download/" + utils.SubName + "?target=mihomo"
+	targetURL := substore.BaseURL + "/download/" + substore.SubName + "?target=mihomo"
 	resp, err := localClient.Get(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("请求 mihomo 配置失败: %w", err)
@@ -199,7 +199,7 @@ func (cs *ConfigSaver) generateBase64() ([]byte, error) {
 	}
 
 	// http://127.0.0.1:8299/download/sub?target=V2Ray
-	targetURL := utils.BaseURL + "/download/" + utils.SubName + "?target=V2Ray"
+	targetURL := substore.BaseURL + "/download/" + substore.SubName + "?target=V2Ray"
 	resp, err := localClient.Get(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("请求 base64 失败: %w", err)
@@ -223,7 +223,7 @@ func (cs *ConfigSaver) generateSingbox() ([]byte, error) {
 	}
 
 	// http://127.0.0.1:8299/download/sub?target=sing-box
-	targetURL := utils.BaseURL + "/download/" + utils.SubName + "?target=sing-box"
+	targetURL := substore.BaseURL + "/download/" + substore.SubName + "?target=sing-box"
 	resp, err := localClient.Get(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("请求 sing-box 配置失败: %w", err)

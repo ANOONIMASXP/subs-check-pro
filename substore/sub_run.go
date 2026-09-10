@@ -1,5 +1,4 @@
 // Package substore 用来处理 Sub-Store js引擎、运行、资源等
-// sub-store\sub_run.go
 package substore
 
 import (

@@ -1,5 +1,4 @@
-// Package utils 工具类包
-package utils
+package substore
 
 import (
 	"bytes"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/sinspired/subs-check-pro/v3/config"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 // Sub-Store 资源结构体
@@ -89,7 +89,7 @@ func newDefaultSub(data []byte) sub {
 
 // fetchProcess 获取指定资源的现有 process 列表（保留原始 JSON 用于差量合并）
 func fetchProcess(endpoint, name string) ([]json.RawMessage, error) {
-	resp, err := http.Get(JoinURL(BaseURL, "api", endpoint, name))
+	resp, err := http.Get(utils.JoinURL(BaseURL, "api", endpoint, name))
 
 	if err != nil {
 		return nil, err

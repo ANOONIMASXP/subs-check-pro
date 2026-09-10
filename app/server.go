@@ -20,7 +20,7 @@ import (
 	"github.com/sinspired/subs-check-pro/v3/check"
 	"github.com/sinspired/subs-check-pro/v3/config"
 	"github.com/sinspired/subs-check-pro/v3/save/method"
-	"github.com/sinspired/subs-check-pro/v3/utils"
+	"github.com/sinspired/subs-check-pro/v3/substore"
 )
 
 const (
@@ -33,7 +33,7 @@ const (
 	SharePath       = "/share"
 	PublicPath      = "/more"
 	FilesPath       = "/files"
-	SubInfoPath     = utils.SubInfoPath
+	SubInfoPath     = substore.SubInfoPath
 	HeaderFromCheck = "X-From-Subs-Check-pro"
 	QueryFromCheck  = "from_subs_check_pro"
 )
