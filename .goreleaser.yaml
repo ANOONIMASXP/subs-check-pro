@@ -70,14 +70,13 @@ builds:
     env:
       - CGO_ENABLED=1
       # 根据架构动态切换 Zig target
-      - CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64-linux-musl{{ else if eq .Arch "arm64" }}aarch64-linux-musl{{ else if eq .Arch "arm" }}arm-linux-musleabihf{{ else if eq .Arch "mipsle" }}mipsel-linux-musl{{ end }}
-      - CXX=zig c++ -target {{ if eq .Arch "amd64" }}x86_64-linux-musl{{ else if eq .Arch "arm64" }}aarch64-linux-musl{{ else if eq .Arch "arm" }}arm-linux-musleabihf{{ else if eq .Arch "mipsle" }}mipsel-linux-musl{{ end }}
+      - CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64-linux-musl{{ else if eq .Arch "arm64" }}aarch64-linux-musl{{ else if eq .Arch "arm" }}arm-linux-musleabihf{{ end }}
+      - CXX=zig c++ -target {{ if eq .Arch "amd64" }}x86_64-linux-musl{{ else if eq .Arch "arm64" }}aarch64-linux-musl{{ else if eq .Arch "arm" }}arm-linux-musleabihf{{ end }}
     targets:
       # Desktop / Server
       - linux_amd64
       - linux_arm64
       - linux_arm_7
-      - linux_mipsle_softfloat
     mod_timestamp: "{{ .CommitTimestamp }}"
     flags:
       - -trimpath
