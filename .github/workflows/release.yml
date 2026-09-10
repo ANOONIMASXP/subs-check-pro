@@ -21,22 +21,7 @@ jobs:
           fetch-depth: 0
           lfs: false
 
-      - name: Setup Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: stable
-
-      # 引入 Zig 以支持 GoReleaser 零依赖 CGO 跨平台编译
-      - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
-
-      - name: Setup UPX
-        uses: crazy-max/ghaction-upx@v4
-        with:
-          install-only: true
-          version: latest
-
-      # 为 GoReleaser 准备 Docker 环境
+      # 为多架构构建配置宿主机的 docker daemon
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -81,15 +66,24 @@ jobs:
 
       # 自动发布到 GitHub Releases 和 Docker Hub，使用 .goreleaser.yaml 中的配置
       # 正式版发布时忽略两个正式版中间的预览版标签
-      - name: Create GitHub release and Docker images
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          version: latest
-          args: release --clean
+      - name: Run GoReleaser via goreleaser-cross
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           GORELEASER_PREVIOUS_TAG: ${{ steps.release_type.outputs.type == 'stable' && steps.prev_tag.outputs.tag || '' }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          docker run --rm --privileged \
+            -v $PWD:/work -w /work \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $HOME/.docker:/root/.docker \
+            -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+            -e DOCKERHUB_USERNAME="$DOCKERHUB_USERNAME" \
+            -e GORELEASER_PREVIOUS_TAG="$GORELEASER_PREVIOUS_TAG" \
+            -e GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            --entrypoint bash \
+            goreleaser/goreleaser-cross:latest \
+            -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y upx && git config --global --add safe.directory '*' && goreleaser release --clean"
 
   notify:
     if: github.ref != 'refs/heads/v2'

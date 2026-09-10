@@ -4,7 +4,7 @@ before:
   hooks:
     - go mod tidy
     - go get -u github.com/sinspired/subs-check-pro-webui
-    - go install github.com/tc-hib/go-winres@latest
+    - env GOBIN=/usr/local/bin go install github.com/tc-hib/go-winres@latest
     - go generate ./...
 
 release:
@@ -16,8 +16,9 @@ release:
     ---
     ![GitHub Downloads (all assets, specific tag)](https://img.shields.io/github/downloads/sinspired/subs-check-pro/{{ .Tag }}/total?style=flat&logo=github&label=当前版本下载次数&labelColor=black&color=0ea5a0)
 
+    - 🧪 v{{.Major}} 版本移除了 Node 依赖，移动端更友好，欢迎测试！
     - 💡 **完整变更日志**: [{{ .PreviousTag }}...{{ .Tag }}]({{ .GitURL }}/compare/{{ .PreviousTag }}...{{ .Tag }})
-    - 🐳 Docker 镜像已发布 `docker pull sinspired/subs-check-pro:latest`
+    - 🐳 Docker 镜像已发布 `docker pull sinspired/subs-check-pro:{{ .Version }}`
     - 💬 反馈方式
       - 👥 Telegram 群组：[subs-check性能版](https://t.me/subs_check_pro)
       - 📣 Telegram 频道：[关注频道](https://t.me/sinspired_ai)
@@ -69,9 +70,9 @@ builds:
     binary: subs-check-pro
     env:
       - CGO_ENABLED=1
-      # 根据架构动态切换 Zig target
-      - CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64-linux-musl{{ else if eq .Arch "arm64" }}aarch64-linux-musl{{ else if eq .Arch "arm" }}arm-linux-musleabihf{{ end }}
-      - CXX=zig c++ -target {{ if eq .Arch "amd64" }}x86_64-linux-musl{{ else if eq .Arch "arm64" }}aarch64-linux-musl{{ else if eq .Arch "arm" }}arm-linux-musleabihf{{ end }}
+      # 使用镜像内置的 Linux GNU 编译器
+      - CC={{ if eq .Arch "amd64" }}x86_64-linux-gnu-gcc{{ else if eq .Arch "arm64" }}aarch64-linux-gnu-gcc{{ else }}arm-linux-gnueabihf-gcc{{ end }}
+      - CXX={{ if eq .Arch "amd64" }}x86_64-linux-gnu-g++{{ else if eq .Arch "arm64" }}aarch64-linux-gnu-g++{{ else }}arm-linux-gnueabihf-g++{{ end }}
     targets:
       # Desktop / Server
       - linux_amd64
@@ -90,8 +91,9 @@ builds:
     binary: subs-check-pro
     env:
       - CGO_ENABLED=1
-      - CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64-windows-gnu{{ else }}aarch64-windows-gnu{{ end }}
-      - CXX=zig c++ -target {{ if eq .Arch "amd64" }}x86_64-windows-gnu{{ else }}aarch64-windows-gnu{{ end }}
+      # 使用镜像内置的 MinGW 编译器
+      - CC={{ if eq .Arch "amd64" }}x86_64-w64-mingw32-gcc{{ else if eq .Arch "arm64" }}/llvm-mingw/bin/aarch64-w64-mingw32-gcc{{ else }}i686-w64-mingw32-gcc{{ end }}
+      - CXX={{ if eq .Arch "amd64" }}x86_64-w64-mingw32-g++{{ else if eq .Arch "arm64" }}/llvm-mingw/bin/aarch64-w64-mingw32-g++{{ else }}i686-w64-mingw32-g++{{ end }}
     targets:
       - windows_amd64
       - windows_arm64
@@ -102,13 +104,14 @@ builds:
       # 切断对 Windows C 运行库的依赖
       - -s -w -extldflags "-static" -X main.Version={{ .Version }} -X main.CurrentCommit={{ .ShortCommit }}
 
-  # 3. macOS 构建组 (苹果禁止静态链接，所以移除 -static 参数)
+  # 3. macOS 构建组
   - id: subs-check-pro-darwin
     binary: subs-check-pro
     env:
       - CGO_ENABLED=1
-      - CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64-macos{{ else }}aarch64-macos{{ end }}
-      - CXX=zig c++ -target {{ if eq .Arch "amd64" }}x86_64-macos{{ else }}aarch64-macos{{ end }}
+      # 使用 OSXCross (苹果跨平台编译器)，镜像内自带了 Apple SDK
+      - CC={{ if eq .Arch "amd64" }}o64-clang{{ else }}oa64-clang{{ end }}
+      - CXX={{ if eq .Arch "amd64" }}o64-clang++{{ else }}oa64-clang++{{ end }}
     targets:
       - darwin_amd64
       - darwin_arm64
@@ -116,7 +119,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      # macOS 绝对不能加 -extldflags "-static"
+      # macOS 苹果禁止静态链接，不能加 -extldflags "-static"
       - -s -w -X main.Version={{ .Version }} -X main.CurrentCommit={{ .ShortCommit }}
 
 # 归档配置
@@ -154,7 +157,7 @@ dockers_v2:
     # 自动发布 latest 和 版本号
     tags:
       - "{{ .Version }}"
-      - "{{ if not .IsNightly }}latest{{ end }}"
+      - '{{ if eq .Prerelease "" }}latest{{ end }}'
 
     # docker buildx 的平台列表
     platforms:
@@ -174,7 +177,7 @@ dockers_v2:
       "org.opencontainers.image.base.name": "{{.BaseImage}}"
       "org.opencontainers.image.base.digest": "{{.BaseImageDigest}}"
     # 正式版本创建物料清单 (SBOM)，预发布版本跳过
-    sbom: "{{ not .IsNightly }}"
+    sbom: '{{ eq .Prerelease "" }}'
 
 # 压缩可执行文件
 upx:
