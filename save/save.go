@@ -174,7 +174,7 @@ func (cs *ConfigSaver) generateAllYaml(proxies []map[string]any) ([]byte, error)
 
 	// 仅在执行本地保存，且 SubStore 运行时触发 SubStore 更新
 	if cs.methodName == "local" && config.GlobalConfig.SubStorePort != "" && substore.IsSubStoreRunning.Load() {
-		utils.SyncSubStore(yamlData)
+		substore.SyncSubStore(yamlData)
 	}
 	return yamlData, nil
 }
@@ -189,7 +189,7 @@ func (cs *ConfigSaver) generateMihomo(proxies []map[string]any) ([]byte, error) 
 		return fallback()
 	}
 
-	targetURL := utils.BaseURL + "/api/file/" + utils.MihomoName
+	targetURL := substore.BaseURL + "/api/file/" + substore.MihomoName
 	resp, err := localClient.Get(targetURL)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		slog.Warn("远程获取 mihomo 失败，回退到本地生成", "err", err, "status", func() int {
@@ -216,7 +216,7 @@ func (cs *ConfigSaver) generateBase64() ([]byte, error) {
 	}
 
 	// http://127.0.0.1:8299/download/sub?target=V2Ray
-	targetURL := utils.BaseURL + "/download/" + utils.SubName + "?target=V2Ray"
+	targetURL := substore.BaseURL + "/download/" + substore.SubName + "?target=V2Ray"
 	resp, err := localClient.Get(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("请求 base64 失败: %w", err)

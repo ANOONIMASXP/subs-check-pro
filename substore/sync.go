@@ -1,5 +1,4 @@
-// Package utils 工具类包
-package utils
+package substore
 
 import (
 	"bytes"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/goccy/go-json"
 	"github.com/sinspired/subs-check-pro/v3/config"
+	"github.com/sinspired/subs-check-pro/v3/utils"
 	"github.com/sinspired/subs-check-pro/v3/utils/script"
 )
 
@@ -455,7 +455,7 @@ func rebuildSubInfoContent(raw json.RawMessage) (any, error) {
 // 用于比对时忽略代理前缀差异。
 func canonicalURL(u string) string {
 	u = strings.TrimPrefix(u, config.GlobalConfig.GithubProxy)
-	return NormalizeGitHubRawURL(u)
+	return utils.NormalizeGitHubRawURL(u)
 }
 
 func isSameScpOp(raw json.RawMessage, op ScriptOperator) bool {
@@ -597,7 +597,7 @@ func newMihomoFile() file {
 				Type: "Script Operator",
 				ID:   newOperatorID(),
 				Args: Args{
-					"content":   WarpURL(overwriteURL, IsGithubProxy),
+					"content":   utils.WarpURL(overwriteURL, IsGithubProxy),
 					"mode":      "link",
 					"arguments": Args{},
 				},
@@ -611,8 +611,8 @@ func newMihomoFile() file {
 
 // newSingboxFile 返回 singbox 文件
 func newSingboxFile(name, jsURL, jsonURL string) file {
-	jsURL = WarpURL(jsURL, IsGithubProxy) + "#name=sub&type=0"
-	jsonURL = WarpURL(jsonURL, IsGithubProxy)
+	jsURL = utils.WarpURL(jsURL, IsGithubProxy) + "#name=sub&type=0"
+	jsonURL = utils.WarpURL(jsonURL, IsGithubProxy)
 
 	version := strings.Split(name, "-")[1]
 	remark := "默认 Sing-Box 订阅 (带分流规则)"
@@ -655,7 +655,7 @@ func newSingboxFile(name, jsURL, jsonURL string) file {
 
 // fetchProcess 获取指定资源的现有 process 列表（保留原始 JSON 用于差量合并）
 func fetchProcess(endpoint, name string) ([]json.RawMessage, error) {
-	resp, err := http.Get(JoinURL(BaseURL, "api", endpoint, name))
+	resp, err := http.Get(utils.JoinURL(BaseURL, "api", endpoint, name))
 
 	if err != nil {
 		return nil, err
@@ -824,18 +824,18 @@ func SyncSubStore(yamlData []byte) {
 
 // 判断是否需要做耗时的 GetGhProxy 探活
 func needGhProxy(doSub, doMihomo, doSbLatest, doSbOld bool) bool {
-	if doMihomo && !IsLocalURL(config.GlobalConfig.MihomoOverwriteURL) {
+	if doMihomo && !utils.IsLocalURL(config.GlobalConfig.MihomoOverwriteURL) {
 		return true
 	}
 	if doSbLatest {
-		if !IsLocalURL(config.GlobalConfig.SingboxLatest.JS) ||
-			!IsLocalURL(config.GlobalConfig.SingboxLatest.JSON) {
+		if !utils.IsLocalURL(config.GlobalConfig.SingboxLatest.JS) ||
+			!utils.IsLocalURL(config.GlobalConfig.SingboxLatest.JSON) {
 			return true
 		}
 	}
 	if doSbOld {
-		if !IsLocalURL(config.GlobalConfig.SingboxOld.JS) ||
-			!IsLocalURL(config.GlobalConfig.SingboxOld.JSON) {
+		if !utils.IsLocalURL(config.GlobalConfig.SingboxOld.JS) ||
+			!utils.IsLocalURL(config.GlobalConfig.SingboxOld.JSON) {
 			return true
 		}
 	}
@@ -849,7 +849,7 @@ func SyncSubStorePartial(yamlData []byte, doSub, doMihomo, doSbLatest, doSbOld b
 
 	// 只有涉及到这几者才做耗时的 GetGhProxy 探活
 	if needGhProxy(doSub, doMihomo, doSbLatest, doSbOld) {
-		IsGithubProxy = GetGhProxy()
+		IsGithubProxy = utils.GetGhProxy()
 	}
 
 	// 调试时等待 node 启动

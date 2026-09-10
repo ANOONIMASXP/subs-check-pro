@@ -44,7 +44,7 @@ const (
 	PublicPath      = "/more"
 	FilesPath       = "/files"
 	AnalysisPath    = "/analysis"
-	SubInfoPath     = utils.SubInfoPath
+	SubInfoPath     = substore.SubInfoPath
 	APIAuthHeader   = "X-API-Key"
 	HeaderFromCheck = "X-From-Subs-Check-pro"
 	QueryFromCheck  = "from_subs_check_pro"
@@ -439,21 +439,21 @@ func (app *App) updateConfig(c *gin.Context) {
 				// 收集所有触发了更新的项目名称
 				var targets []string
 				if doSub {
-					targets = append(targets, utils.SubName)
+					targets = append(targets, substore.SubName)
 				}
 				if doMihomo {
-					targets = append(targets, utils.MihomoName)
+					targets = append(targets, substore.MihomoName)
 				}
 				if doLatest {
-					targets = append(targets, utils.SingboxName+newConfig.SingboxLatest.Version)
+					targets = append(targets, substore.SingboxName+newConfig.SingboxLatest.Version)
 				}
 				if doOld {
-					targets = append(targets, utils.SingboxName+newConfig.SingboxOld.Version)
+					targets = append(targets, substore.SingboxName+newConfig.SingboxOld.Version)
 				}
 
 				// 打印日志，格式如: msg="已触发 Sub-Store 后台同步" name="sub丨mihomo"
 				slog.Info("已触发 Sub-Store 后台同步", "name", strings.Join(targets, "丨"))
-				utils.SyncSubStorePartial(nil, doSub, doMihomo, doLatest, doOld)
+				substore.SyncSubStorePartial(nil, doSub, doMihomo, doLatest, doOld)
 			}
 		}()
 	}
@@ -507,8 +507,8 @@ func (app *App) getStatus(c *gin.Context) {
 
 		"subStorePort":  config.GlobalConfig.SubStorePort,
 		"subStorePath":  config.GlobalConfig.SubStorePath,
-		"singboxOld":    utils.OldSingboxVersion,
-		"singboxLatest": utils.LatestSingboxVersion,
+		"singboxOld":    substore.OldSingboxVersion,
+		"singboxLatest": substore.LatestSingboxVersion,
 	})
 }
 
@@ -682,7 +682,7 @@ func (app *App) getOriginVersion(c *gin.Context) {
 }
 
 func (app *App) getSingboxVersions(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"latest": utils.LatestSingboxVersion, "old": utils.OldSingboxVersion})
+	c.JSON(http.StatusOK, gin.H{"latest": substore.LatestSingboxVersion, "old": substore.OldSingboxVersion})
 }
 
 // ReadLastNLines 读取最新日志

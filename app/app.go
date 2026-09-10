@@ -153,7 +153,7 @@ func (app *App) Initialize() error {
 
 	if config.GlobalConfig.SubStorePort != "" {
 		// Sub-Store 服务启动时,Singbox 版本号才有意义
-		utils.InitSingboxVersion()
+		substore.InitSingboxVersion()
 
 		subStoreAddr := normalizeListenAddr(config.GlobalConfig.SubStorePort)
 		if !subStorePortAvailable {
