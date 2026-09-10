@@ -58,30 +58,6 @@ func (t *netTiming) trace() *httptrace.ClientTrace {
 	}
 }
 
-func (t *netTiming) fields() []any {
-	dns := zeroIfEmpty(t.dnsStart, t.dnsDone)
-	connect := zeroIfEmpty(t.connectStart, t.connectDone)
-	tlsDur := zeroIfEmpty(t.tlsStart, t.tlsDone)
-	var ttfb time.Duration
-	if !t.gotFirstByte.IsZero() {
-		ttfb = t.gotFirstByte.Sub(t.start)
-	}
-	return []any{
-		"dnsMs", dns.Milliseconds(),
-		"connectMs", connect.Milliseconds(),
-		"tlsMs", tlsDur.Milliseconds(),
-		"ttfbMs", ttfb.Milliseconds(),
-		"totalMs", t.total.Milliseconds(),
-	}
-}
-
-func zeroIfEmpty(start, done time.Time) time.Duration {
-	if start.IsZero() || done.IsZero() {
-		return 0
-	}
-	return done.Sub(start)
-}
-
 type LoonEngine struct {
 	scriptSrc  string
 	store      *LoonKVStore

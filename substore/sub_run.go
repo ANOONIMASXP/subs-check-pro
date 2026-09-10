@@ -144,9 +144,10 @@ func (h *plainLogHandler) Handle(ctx context.Context, r slog.Record) error {
 	// 3. 补充前缀
 	if !strings.HasPrefix(msg, "[sub-store]") && !strings.HasPrefix(msg, "使用") && !strings.HasPrefix(msg, "请求") {
 		levelStr := "INFO"
-		if r.Level == slog.LevelError {
+		switch r.Level {
+		case slog.LevelError:
 			levelStr = "ERROR"
-		} else if r.Level == slog.LevelWarn {
+		case slog.LevelWarn:
 			levelStr = "WARN"
 		}
 		msg = fmt.Sprintf("[sub-store] %s: %s", levelStr, msg)
@@ -467,7 +468,7 @@ func ReloadSubStoreEngine() error {
 		return fmt.Errorf("构建新 Sub-Store 引擎失败: %w", err)
 	}
 	server.UpdateEngine(newEngine)
-	slog.Info("Sub-Store 后端脚本已热更新，无需重启进程")
+	slog.Info("Sub-Store 后端 已成功热重载并应用新版本")
 	return nil
 }
 

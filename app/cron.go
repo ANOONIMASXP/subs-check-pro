@@ -1,11 +1,11 @@
 package app
 
 import (
-	"context"
+
 	"log/slog"
 	"os"
 	"strings"
-	"time"
+
 
 	"github.com/robfig/cron/v3"
 	"github.com/sinspired/subs-check-pro/v3/assets"
@@ -202,25 +202,6 @@ func (app *App) UpdateSubStoreCron() {
 
 			// 如果有任何一端更新了
 			if result != nil && (result.UpdatedBackend || result.UpdatedFrontend) {
-				// 后端更新完成后，在外部进行优雅重启
-				if result.UpdatedBackend {
-					if !app.checking.Load() {
-						slog.Info("Sub-Store 服务 重启中...")
-						if app.cancel != nil {
-							app.cancel() // 发出关闭信号，RunSubStoreService 收到后会自动触发 Shutdown
-
-							// 使用确定性的端口释放等待
-							if !substore.WaitSubStoreStopped(5 * time.Second) {
-								slog.Warn("等待旧版 Sub-Store 释放端口超时，强制继续")
-							}
-
-							app.ctx, app.cancel = context.WithCancel(context.Background())
-						}
-						go substore.RunSubStoreService(app.ctx)
-					} else {
-						slog.Warn("当前正在执行代理检测，跳过重启 Sub-Store 服务，新后端将在下次启动时生效")
-					}
-				}
 
 				// 发送通知
 				utils.SendNotifySubStoreAssets(

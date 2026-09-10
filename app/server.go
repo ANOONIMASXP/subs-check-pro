@@ -3,7 +3,6 @@ package app
 
 import (
 	"bufio"
-	"context"
 	"crypto/subtle"
 	"fmt"
 	"html/template"
@@ -552,24 +551,6 @@ func (app *App) updateSubStoreHandler(c *gin.Context) {
 			slog.Error("更新 Sub-Store 失败", "error", err)
 			finalMsg = "更新 Sub-Store 失败: " + err.Error()
 		} else if result != nil && (result.UpdatedBackend || result.UpdatedFrontend) {
-			if result.UpdatedBackend {
-				if !app.checking.Load() {
-					slog.Info("Sub-Store 服务 重启中...")
-					if app.cancel != nil {
-						app.cancel() // 发出关闭信号，RunSubStoreService 收到后会自动触发 Shutdown
-
-						// 使用确定性的端口释放等待
-						if !substore.WaitSubStoreStopped(5 * time.Second) {
-							slog.Warn("等待旧版 Sub-Store 释放端口超时，强制继续")
-						}
-
-						app.ctx, app.cancel = context.WithCancel(context.Background())
-					}
-					go substore.RunSubStoreService(app.ctx)
-				} else {
-					slog.Warn("当前正在执行代理检测，跳过重启 Sub-Store 服务，新后端将在下次启动时生效")
-				}
-			}
 
 			// 触发已聚合在 APP 层的通知系统
 			utils.SendNotifySubStoreAssets(

@@ -233,8 +233,6 @@ func UpdateSubStoreAssets() (*SubStoreUpdateResult, error) {
 	if result.UpdatedBackend {
 		if err := ReloadSubStoreEngine(); err != nil {
 			slog.Error("Sub-Store 后端热重载失败，需重启进程后才能生效", "error", err)
-		} else {
-			slog.Info("Sub-Store 后端已成功热重载并应用新版本")
 		}
 	}
 
