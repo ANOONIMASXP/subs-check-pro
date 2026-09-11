@@ -278,11 +278,55 @@ func corsWails(c *gin.Context) {
 
 // registerWebUIRoutes 注册WebUI路由
 func (app *App) registerWebUIRoutes(router *gin.Engine) {
-	router.GET(AdminPath, func(c *gin.Context) {
-		c.HTML(http.StatusOK, "admin.html", gin.H{
+	// 1. 独立的登录页面路由 (公开访问)
+	router.GET("/login", func(c *gin.Context) {
+		c.HTML(http.StatusOK, "login.html", gin.H{
 			"configPath": app.configPath,
 		})
 	})
+
+	// 2. 受保护的管理面板路由组 (必须鉴权)
+	protectedPages := router.Group("/")
+	protectedPages.Use(app.pageAuthMiddleware())
+	{
+		// 只有合法用户才能请求到 admin.html 的网页源码
+		protectedPages.GET(AdminPath, func(c *gin.Context) {
+			c.HTML(http.StatusOK, "admin.html", gin.H{
+				"configPath": app.configPath,
+			})
+		})
+	}
+}
+
+// pageAuthMiddleware 专门给 HTML 页面使用的鉴权中间件
+// 作用：防止未登录用户强行访问 /admin 偷窥网页 UI 结构
+func (app *App) pageAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 优先尝试从 Cookie 读取凭证 (常规 Web 端登录流程)
+		cookie, err := c.Cookie("scp_api_key")
+		apiKey := ""
+		if err == nil {
+			apiKey = cookie
+		} else {
+			// 从 Query 参数读取凭证
+			apiKey = c.Query("api_key")
+		}
+
+		// 对比密钥
+		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(config.GlobalConfig.APIKey)) != 1 {
+			// 凭证无效，直接 302 重定向到登录页，并终止后续渲染
+			c.Redirect(http.StatusFound, "/login")
+			c.Abort()
+			return
+		}
+
+		// 如果是通过 Query 带参访问的，顺手帮浏览器种下 Cookie，方便后续页面刷新时不掉线
+		if err != nil && apiKey != "" {
+			c.SetCookie("scp_api_key", apiKey, 2592000, "/", "", false, false)
+		}
+
+		c.Next()
+	}
 }
 
 // registerPublicRoutes 注册 主题/分析报告/版本号等 公共路由
@@ -303,7 +347,12 @@ func (app *App) registerPublicRoutes(router *gin.Engine) {
 		app.setTheme(c)
 	})
 
-	router.GET(AnalysisPath, app.handleAnalysis)
+	// 将分析页面放入受保护的路由中
+	protectedPages := router.Group("/")
+	protectedPages.Use(app.pageAuthMiddleware())
+	{
+		protectedPages.GET(AnalysisPath, app.handleAnalysis)
+	}
 }
 
 // registerAPIRoutes 注册api状态路由
