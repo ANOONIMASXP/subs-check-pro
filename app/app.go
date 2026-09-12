@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -436,11 +435,6 @@ func cleanupMihomo() {
 	}
 
 	resolver.ClearCache()
-}
-
-// TempLog 返回临时日志路径
-func TempLog() string {
-	return filepath.Join(os.TempDir(), "subs-check-pro.log")
 }
 
 // Shutdown 尝试优雅关闭所有子服务与资源
