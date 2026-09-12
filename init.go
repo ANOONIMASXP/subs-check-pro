@@ -24,8 +24,6 @@ var (
 	CurrentCommit = "unknown"
 )
 
-var TempLog string
-
 func init() {
 	// 设置依赖库日志级别
 	if os.Getenv("MIHOMO_DEBUG") != "" {
@@ -37,9 +35,14 @@ func init() {
 	// 获取日志级别
 	logLevel := getLogLevel()
 
+	logPath, err := app.GetLogPath()
+	if err != nil {
+		slog.Error("无法获取日志存储路径", "error", err)
+	}
+
 	// 配置日志文件
 	fileLogger := &lumberjack.Logger{
-		Filename:   app.TempLog(),
+		Filename:   logPath,
 		MaxSize:    10,
 		MaxBackups: 3,
 		MaxAge:     7,

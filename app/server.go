@@ -1,4 +1,4 @@
-// Package app: server.go
+// Package app: server.go，内核库
 package app
 
 import (
@@ -640,7 +640,11 @@ func (app *App) updateSubStoreHandler(c *gin.Context) {
 
 // getLogs 获取日志
 func (app *App) getLogs(c *gin.Context) {
-	logPath := TempLog()
+	logPath, err := GetLogPath()
+	if err != nil {
+		slog.Error("无法获取日志存储路径", "error", err)
+	}
+
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {
 		c.JSON(http.StatusOK, gin.H{"logs": []string{"[暂无日志文件]"}})
 		return
@@ -879,7 +883,10 @@ func (app *App) notifyTestHandler(c *gin.Context) {
 }
 
 func (app *App) clearLogsHandler(c *gin.Context) {
-	logPath := TempLog()
+	logPath, err := GetLogPath()
+	if err != nil {
+		slog.Error("无法获取日志存储路径", "error", err)
+	}
 
 	// 清空日志内容
 	if err := os.Truncate(logPath, 0); err != nil {
