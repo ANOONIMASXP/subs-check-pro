@@ -439,6 +439,7 @@ func (app *App) updateConfig(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求格式"})
+		slog.Error("配置更新失败，请求格式错误", "error", err)
 		return
 	}
 
@@ -446,6 +447,7 @@ func (app *App) updateConfig(c *gin.Context) {
 	var newConfig config.Config
 	if err := yaml.Unmarshal([]byte(req.Content), &newConfig); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "YAML格式或解析错误: " + err.Error()})
+		slog.Error("配置更新失败，YAML格式或解析错误", "error", err)
 		return
 	}
 
