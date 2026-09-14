@@ -41,3 +41,5 @@ speed_*.csv
 .vscode/
 
 !Subs-Check-PRO_OG.png
+
+./build.txt
