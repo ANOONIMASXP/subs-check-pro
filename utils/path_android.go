@@ -1,35 +1,23 @@
-//utils/path_android.go
+// utils/path_android.go
 //go:build android
 
 package utils
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
-// GetExecutablePath 获取 Android App 专属的可读写沙盒目录
+// GetExecutablePath 返回可执行文件所在目录。
+//
+// Android 下不再使用 App 沙盒（/data/data/<包名>/files），
+// 而是让 config、output 等目录与程序可执行文件同级生成。
 func GetExecutablePath() string {
-	// 1. 读取 /proc/self/cmdline 获取当前进程包名 (如 com.wails.app)
-	if data, err := os.ReadFile("/proc/self/cmdline"); err == nil {
-		pkgName := strings.Trim(string(data), "\x00\r\n\t ")
-		if idx := strings.IndexByte(pkgName, 0); idx != -1 {
-			pkgName = pkgName[:idx]
-		}
-		if pkgName != "" {
-			// Android 私有存储目录：/data/data/<包名>/files
-			appDir := filepath.Join("/data/data", pkgName, "files")
-			if err := os.MkdirAll(appDir, 0755); err == nil {
-				return appDir
-			}
-		}
+	ex, err := os.Executable()
+	if err != nil {
+		slog.Error("获取程序路径失败", "error", err)
+		return "."
 	}
-
-	// 2. 兜底方案
-	if wd, err := os.Getwd(); err == nil && wd != "/" && wd != "" {
-		return wd
-	}
-
-	return "."
+	return filepath.Dir(ex)
 }
