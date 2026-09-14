@@ -231,10 +231,6 @@ func (app *App) pollConfigFile(ctx context.Context) {
 
 // onConfigChange 配置文件变化时的统一响应逻辑，由 inotify 事件或轮询共同调用。
 func (app *App) onConfigChange() {
-	oldCronExpr := config.GlobalConfig.CronExpression
-	oldInterval := app.interval
-
-	oldSubStoreUpdateCron := config.GlobalConfig.SubStoreUpdateCron
 	oldSubStorePath := config.GlobalConfig.SubStorePath
 	oldSubStorePort := config.GlobalConfig.SubStorePort
 
@@ -309,26 +305,5 @@ func (app *App) onConfigChange() {
 		if err := substore.ReStartSubStore(app.ctx); err != nil {
 			slog.Error("Sub-Store 重启失败", "error", err)
 		}
-	}
-
-	// 检查测活/测速调度（主测速流程调度）是否发生变化
-	if oldCronExpr != config.GlobalConfig.CronExpression || oldInterval != config.GlobalConfig.CheckInterval {
-		app.interval = func() int {
-			if config.GlobalConfig.CheckInterval <= 0 {
-				return 2880
-			}
-			if config.GlobalConfig.CheckInterval <= 60 {
-				return 60
-			}
-			return config.GlobalConfig.CheckInterval
-		}()
-		slog.Warn("检测任务调度设置发生变化，正在重新配置定时器")
-		app.setTimer()
-	}
-
-	// 检查后台 Sub-Store 资源更新任务是否发生变化
-	if oldSubStoreUpdateCron != config.GlobalConfig.SubStoreUpdateCron {
-		slog.Warn("Sub-Store 资源更新设置变化，重新配置 Sub-Store 定时更新任务")
-		app.UpdateSubStoreCron()
 	}
 }

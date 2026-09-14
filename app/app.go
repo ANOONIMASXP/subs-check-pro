@@ -11,13 +11,11 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/metacubex/mihomo/component/resolver"
-	"github.com/robfig/cron/v3"
 	"github.com/sinspired/subs-check-pro/v3/app/monitor"
 	"github.com/sinspired/subs-check-pro/v3/check"
 	"github.com/sinspired/subs-check-pro/v3/config"
@@ -32,24 +30,12 @@ type App struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	configPath string
-	interval   int
 	watcher    *fsnotify.Watcher
 	// watcherCancel 用于停止轮询配置监听 goroutine（inotify 不可用时的降级方案）。
 	// 若 inotify 正常工作则此字段为 nil。
 	watcherCancel context.CancelFunc
 	checkChan     chan struct{} // 触发检测的通道
 	checking      atomic.Bool   // 检测状态标志
-	ticker        *time.Ticker
-	done          chan struct{} // 用于结束ticker goroutine的信号
-	cron          *cron.Cron    // crontab调度器（代理检测定时任务）
-	// updateCron 版本更新定时任务调度器，独立存储以便 SetupUpdateTasks 重调时先停止旧实例，
-	// 避免每次配置变更触发重建时 goroutine 持续累积。
-	updateCron *cron.Cron
-	updateMu   sync.Mutex
-
-	// 用于独立管理各项更新任务的 ID
-	idGeoDB    cron.EntryID
-	idSubStore cron.EntryID
 
 	version    string
 	httpServer *http.Server
@@ -76,7 +62,6 @@ func New(version string, configPath string) *App {
 		cancel:     cancel,
 		configPath: configPath,
 		checkChan:  make(chan struct{}),
-		done:       make(chan struct{}),
 		version:    version,
 	}
 }
@@ -112,16 +97,6 @@ func (app *App) Initialize() error {
 	if err := app.initConfigWatcher(); err != nil {
 		return fmt.Errorf("初始化配置文件监听失败: %w", err)
 	}
-
-	app.interval = func() int {
-		if config.GlobalConfig.CheckInterval <= 0 {
-			return 2880
-		}
-		if config.GlobalConfig.CheckInterval <= 60 {
-			return 60
-		}
-		return config.GlobalConfig.CheckInterval
-	}()
 
 	if config.GlobalConfig.ListenPort != "" {
 		if err := app.initHTTPServer(); err != nil {
@@ -176,9 +151,6 @@ func (app *App) Initialize() error {
 	// 设置信号处理器
 	app.stopCh = utils.SetupSignalHandler(&check.ForceClose, &app.checking)
 
-	// 添加主程序版本更新和maxmind数据，sub-store前后端资源更新
-	app.SetupUpdateTasks()
-
 	return nil
 }
 
@@ -188,25 +160,13 @@ func (app *App) Run() {
 		if app.watcher != nil {
 			_ = app.watcher.Close()
 		}
-		if app.ticker != nil {
-			app.ticker.Stop()
-		}
-		if app.cron != nil {
-			app.cron.Stop()
-		}
-		if app.updateCron != nil {
-			app.updateCron.Stop()
-		}
 		if app.watcherCancel != nil {
 			app.watcherCancel()
 		}
 	}()
 
-	app.setTimer()
-
-	if config.GlobalConfig.CronExpression == "" {
-		app.triggerCheck()
-	}
+	// 启动时立即执行一次检测
+	app.triggerCheck()
 
 	// 并发处理 checkChan
 	go func() {
@@ -221,80 +181,6 @@ func (app *App) Run() {
 	if err != nil {
 		slog.Error("关闭应用失败", "err", err)
 	}
-}
-
-// formatNextRunTime 统一格式化下一次运行时间
-func (app *App) formatNextRunTime(next time.Time, loc *time.Location) string {
-	if next.IsZero() {
-		return "未计划"
-	}
-	zoneName, offset := next.Zone()
-	return fmt.Sprintf("%s %s UTC%+d",
-		next.In(loc).Format("2006-01-02 15:04:05"),
-		zoneName,
-		offset/3600,
-	)
-}
-
-// setTimer 根据配置设置定时器
-func (app *App) setTimer() {
-	// 停止现有定时器
-	if app.ticker != nil {
-		// 应该先发送停止信号，防止被=nil后panic
-		close(app.done)                // 发送停止信号
-		app.done = make(chan struct{}) // 创建新通道
-		app.ticker.Stop()
-		app.ticker = nil
-	}
-
-	// 停止现有cron
-	if app.cron != nil {
-		app.cron.Stop()
-		app.cron = nil
-	}
-
-	// 检查是否设置了cron表达式
-	if config.GlobalConfig.CronExpression != "" {
-		slog.Info("设置 cron 定时计划", "cron", config.GlobalConfig.CronExpression)
-		app.cron = cron.New()
-		_, err := app.cron.AddFunc(config.GlobalConfig.CronExpression, func() {
-			app.triggerCheck()
-		})
-		if err != nil {
-			app.cron.Stop()
-			slog.Error("cron 表达式 '" + config.GlobalConfig.CronExpression + "' 解析失败: " + err.Error() + "，将使用检测间隔时间")
-			// 使用间隔时间
-			app.useIntervalTimer()
-		} else {
-			app.cron.Start()
-			for _, entry := range app.cron.Entries() {
-				if entry.Valid() && !entry.Next.IsZero() {
-					slog.Warn("激活 cron 检测任务", "next", app.formatNextRunTime(entry.Next, app.cron.Location()))
-				}
-			}
-		}
-	} else {
-		// 使用间隔时间
-		app.useIntervalTimer()
-	}
-}
-
-// useIntervalTimer 使用间隔时间模式运行
-func (app *App) useIntervalTimer() {
-	// 初始化定时器
-	app.ticker = time.NewTicker(time.Duration(app.interval) * time.Minute)
-	done := app.done
-	// 启动一个goroutine监听定时器事件
-	go func() {
-		for {
-			select {
-			case <-app.ticker.C:
-				app.triggerCheck()
-			case <-done:
-				return // 收到停止信号，退出goroutine
-			}
-		}
-	}()
 }
 
 // TriggerCheck 供外部调用的触发检测方法
@@ -321,19 +207,6 @@ func (app *App) triggerCheck() {
 		slog.Error("检测代理失败", "error", err)
 	}
 
-	// 检测完成后显示下次检测时间
-	if app.ticker != nil {
-		// 使用间隔时间模式
-		app.ticker.Reset(time.Duration(app.interval) * time.Minute)
-		nextCheck := time.Now().Add(time.Duration(app.interval) * time.Minute)
-		slog.Info("下次检测时间", "time", app.formatNextRunTime(nextCheck, time.Local))
-	} else if app.cron != nil {
-		// 使用cron模式
-		entries := app.cron.Entries()
-		if len(entries) > 0 {
-			slog.Info("下次检测时间", "time", app.formatNextRunTime(entries[0].Next, app.cron.Location()))
-		}
-	}
 	debug.FreeOSMemory()
 	check.CurrentStepName.Store("检测完成")
 }
@@ -455,16 +328,7 @@ func (app *App) Shutdown() error {
 		app.cancel()
 	}
 
-	// 停止 ticker/cron/updateCron/watcher（如果存在）
-	if app.ticker != nil {
-		app.ticker.Stop()
-	}
-	if app.cron != nil {
-		app.cron.Stop()
-	}
-	if app.updateCron != nil {
-		app.updateCron.Stop()
-	}
+	// 停止 watcher（如果存在）
 	if app.watcher != nil {
 		lastErr = app.watcher.Close()
 	}
@@ -480,15 +344,6 @@ func (app *App) Shutdown() error {
 			listenPort := strings.TrimPrefix(config.GlobalConfig.ListenPort, ":")
 			slog.Info("HTTP 服务器关闭", "port", listenPort)
 		}
-	}
-
-	// 关闭 done 通道以通知定时 goroutine 退出（如果仍在）
-	select {
-	case <-app.done:
-		// already closed or receiving
-	default:
-		// 保护性关闭 done，避免 panic
-		close(app.done)
 	}
 
 	// 等待短时间，给子 goroutine 清理时间（作为最小可行方案）

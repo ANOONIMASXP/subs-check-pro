@@ -13,8 +13,6 @@ type Config struct {
 	SpeedConcurrent      int     `yaml:"speed-concurrent"`
 	MediaConcurrent      int     `yaml:"media-concurrent"`
 	EnableIPv6           bool    `yaml:"ipv6"`
-	CheckInterval        int     `yaml:"check-interval"`
-	CronExpression       string  `yaml:"cron-expression"`
 	Timeout              int     `yaml:"timeout"`
 	SpeedTestURL         string  `yaml:"speed-test-url"`
 	DownloadTimeout      int     `yaml:"download-timeout"`
@@ -67,12 +65,9 @@ type Config struct {
 	// ConfigDir 运行时由 app.loadConfig 注入，值为当前配置文件所在目录。
 	// 不参与 YAML 序列化，仅供 save/method/local.go 计算默认输出路径使用。
 	ConfigDir           string `yaml:"-"`
-	SubStoreUpdateCron  string `yaml:"sub-store-update-cron"`
 	SubStorePort        string `yaml:"sub-store-port"`
 	SubStorePath        string `yaml:"sub-store-path"`
-	SubStoreSyncCron    string `yaml:"sub-store-sync-cron"`
 	SubStorePushService string `yaml:"sub-store-push-service"`
-	SubStoreProduceCron string `yaml:"sub-store-produce-cron"`
 
 	// ISPCheck 是否开启出口 ISP 类型检测（机房/住宅/移动/商宽/教育/政府/银行等）
 	ISPCheck bool `yaml:"isp-check"`
@@ -133,9 +128,6 @@ var OriginDefaultConfig = &Config{
 
 	// 10 万原始节点触发一次；百万量级约 10 次 GC，CPU 开销可忽略
 	SubsDedupeBatch: 100000,
-
-	// Sub-Store 资源默认每周五更新
-	SubStoreUpdateCron: "14 13 * * 5",
 
 	ISPTimeout: 5, // 默认 5 秒，最高 15 秒
 }

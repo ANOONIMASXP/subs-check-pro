@@ -33,11 +33,6 @@ func NewLoonServer(addr string, engine *LoonEngine, backendPath string) *LoonSer
 	return s
 }
 
-// UpdateEngine 用新引擎原子替换旧引擎，旧引擎里尚未完成的请求继续用旧的执行，
-func (s *LoonServer) UpdateEngine(e *LoonEngine) {
-	s.engine.Store(e)
-}
-
 func (s *LoonServer) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS")

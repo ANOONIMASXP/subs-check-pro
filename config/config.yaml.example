@@ -6,23 +6,6 @@ print-progress: false
 # 'stage': 每个阶段完成,显示下一阶段剩余任务
 progress-mode: 'auto'
 
-# -----------计划任务-----------
-# 支持标准cron表达式，如：
-# '0 */6 * * *' 表示每6小时的整点执行
-# '0 4 */2 * *' 表示每2天的4点执行
-# '0 0 1 * *' 表示每月1日0点执行
-# '*/30 * * * *' 表示每30分钟执行一次
-# '0 4,16 * * *' 表示每天凌晨4点和16点执行一次
-
-# cron表达式，如果正确配置此项，将忽略check-interval
-# 每两天的凌晨 4 点执行
-cron-expression: '0 4 */2 * *'
-
-# 检查间隔(分钟)
-# 建议使用 cron-expression 表达式，# 每两天的凌晨 4 点执行
-# 高峰期检测意义真的不大，节点少，而且不稳定
-check-interval: 2880
-
 # -----------检测参数-----------
 # 流水线任务并发数
 # 测活任务受限于CPU和路由器芯片,占用带宽较小,可适当大一点,量力而行
@@ -103,9 +86,6 @@ gc-threshold: 20000
 listen-port: ':8199'
 
 # -----------SUB-STORE-----------
-# Sub-Store 前后端资源自动更新任务
-sub-store-update-cron: '14 13 * * 5'
-
 # Sub-Store 启动端口，为空则不启动sub-store
 # 更新需重启程序，不可监听局域网IP，只有三种写法 :8299, 127.0.0.1:8299, 0.0.0.0:8299
 sub-store-port: ':8299'
@@ -117,16 +97,6 @@ sub-store-port: ':8299'
 sub-store-path: ''
 
 # 以下配置查看sub-store相关的教程：https://hub.docker.com/r/xream/sub-store
-# sub-store同步gist定时任务
-# 定时任务指定时将订阅/文件上传到私有 Gist. 在 Sub-Store 中, 叫做 同步 或 同步配置.
-# 55 23 * * * 每天 23 点 55 分(避开部分机场后端每天0点定时重启)
-sub-store-sync-cron: '55 5-23/4 * * *'
-# 定时更新订阅
-# SUB_STORE_PRODUCE_CRON 在后台定时处理订阅. 格式为 0 */2 * * *,sub,sub_A;0 */3 * * *,col,col_B
-# 即每 2 小时处理一次单条订阅 sub_A，每 3 小时处理一次组合订阅 col_B。
-# subs-check-pro 默认上传的订阅名为： sub
-# 比如你有一个sub-store订阅,名称为 jichang,就可以填 0 */2 * * *,sub,sub,jichang
-sub-store-produce-cron: '0 */4 * * *,sub,sub'
 # sub-store推送服务地址
 # 例如：Bark: 'SUB_STORE_PUSH_SERVICE=https://api.day.app/XXXXXXXXXXXX/[推送标题]/[推送内容]'
 # 注意：仅需修改 XXXXXXXXXXXX 为自己的 token，[推送标题]/[推送内容] 会被sub-store自动替换为对应的内容

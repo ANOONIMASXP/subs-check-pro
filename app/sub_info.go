@@ -3,7 +3,6 @@ package app
 import (
 	"net/http"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -11,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-yaml"
 	"github.com/sinspired/subs-check-pro/v3/check"
-	"github.com/sinspired/subs-check-pro/v3/config"
 )
 
 // reportFallback 从分析报告中提取的兜底数据
@@ -132,181 +130,9 @@ func writeKV(b *strings.Builder, key string, val string) {
 	b.WriteString("; ")
 }
 
-// calcNextResetTime 计算下次流量重置的绝对时间。
-//
-// 优先级：
-//  1. CronExpression 存在 → 从当前时间起求解下一次 cron 触发时刻
-//  2. CheckInterval > 0   → base（CheckEndTime 或 now）+ interval 分钟
-//  3. 兜底               → now + 24h
+// calcNextResetTime 计算下次流量重置的绝对时间（固定按 24 小时）。
 func calcNextResetTime(now time.Time) time.Time {
-	if expr := strings.TrimSpace(config.GlobalConfig.CronExpression); expr != "" {
-		if next, ok := nextCronTime(expr, now); ok {
-			return next
-		}
-	}
-
-	if interval := config.GlobalConfig.CheckInterval; interval > 0 {
-		base := now
-		if !check.CheckEndTime.IsZero() {
-			base = check.CheckEndTime
-		}
-		return base.Add(time.Duration(interval) * time.Minute)
-	}
-
 	return now.Add(24 * time.Hour)
-}
-
-// nextCronTime 从 from 时刻起，向前搜索 cron 表达式的下一次触发时间。
-//
-// 支持标准 5 字段（min hour dom month dow）与带秒的 6 字段（sec min hour dom month dow）。
-//
-// dom 与 dow 的组合逻辑遵循主流 cron 实现：
-//   - 两者均受限（非 *）：任一匹配即可（OR 语义）
-//   - 仅一方受限：该方必须匹配
-//   - 均为 *：每天均匹配
-//
-// 搜索上限为 366 天，超限时返回 from 与 false。
-func nextCronTime(expr string, from time.Time) (time.Time, bool) {
-	parts := strings.Fields(expr)
-
-	var minF, hourF, domF, monthF, dowF string
-	switch len(parts) {
-	case 5: // min hour dom month dow
-		minF, hourF, domF, monthF, dowF = parts[0], parts[1], parts[2], parts[3], parts[4]
-	case 6: // sec min hour dom month dow
-		minF, hourF, domF, monthF, dowF = parts[1], parts[2], parts[3], parts[4], parts[5]
-	default:
-		return from, false
-	}
-
-	mins := expandCronField(minF, 0, 59)
-	hours := expandCronField(hourF, 0, 23)
-	doms := expandCronField(domF, 1, 31)
-	months := expandCronField(monthF, 1, 12)
-	dows := expandCronField(dowF, 0, 6)
-
-	domWild := domF == "*" || domF == "?"
-	dowWild := dowF == "*" || dowF == "?"
-
-	// 从下一分钟整分开始（截断秒/纳秒），避免匹配"当前"这一分钟
-	t := from.Add(time.Minute).Truncate(time.Minute)
-	deadline := from.Add(366 * 24 * time.Hour)
-
-	for t.Before(deadline) {
-		// 月份不匹配：跳到下个月 1 日 00:00
-		if !intIn(int(t.Month()), months) {
-			t = time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, t.Location())
-			continue
-		}
-
-		// 日期匹配（dom / dow 组合逻辑）
-		var dayOK bool
-		switch {
-		case domWild && dowWild:
-			dayOK = true
-		case domWild: // 仅 dow 受限
-			dayOK = intIn(int(t.Weekday()), dows)
-		case dowWild: // 仅 dom 受限
-			dayOK = intIn(t.Day(), doms)
-		default: // 两者均受限，任一满足即可（OR）
-			dayOK = intIn(t.Day(), doms) || intIn(int(t.Weekday()), dows)
-		}
-		if !dayOK {
-			// 跳到次日 00:00，避免在同一天反复判断小时/分钟
-			t = time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, t.Location())
-			continue
-		}
-
-		// 小时不匹配：跳到下一小时整点
-		if !intIn(t.Hour(), hours) {
-			t = t.Add(time.Hour).Truncate(time.Hour)
-			continue
-		}
-
-		// 分钟不匹配：前进一分钟
-		if !intIn(t.Minute(), mins) {
-			t = t.Add(time.Minute)
-			continue
-		}
-
-		return t, true
-	}
-
-	return from, false
-}
-
-// expandCronField 将单个 cron 字段展开为有效整数集合。
-//
-// 支持的语法（可通过逗号组合）：
-//   - *     / ?   → [minVal, maxVal] 全集
-//   - n           → [n]
-//   - a-b         → [a, a+1, ..., b]
-//   - */step      → [minVal, minVal+step, ...]，步长 step
-//   - a-b/step    → [a, a+step, ...]，上限 b
-func expandCronField(field string, minVal, maxVal int) []int {
-	if field == "*" || field == "?" {
-		all := make([]int, maxVal-minVal+1)
-		for i := range all {
-			all[i] = minVal + i
-		}
-		return all
-	}
-
-	var result []int
-	for part := range strings.SplitSeq(field, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-
-		if before, after, ok := strings.Cut(part, "/"); ok {
-			// 步进：*/step 或 a-b/step
-			step, err := strconv.Atoi(after)
-			if err != nil || step <= 0 {
-				continue
-			}
-			rangeStr := before
-			start, end := minVal, maxVal
-			if rangeStr != "*" && rangeStr != "?" {
-				if before, after, ok := strings.Cut(rangeStr, "-"); ok {
-					a, e1 := strconv.Atoi(before)
-					b, e2 := strconv.Atoi(after)
-					if e1 == nil && e2 == nil {
-						start, end = a, b
-					}
-				} else if n, err := strconv.Atoi(rangeStr); err == nil {
-					start = n
-				}
-			}
-			for v := start; v <= end; v += step {
-				result = append(result, v)
-			}
-			continue
-		}
-
-		if before, after, ok := strings.Cut(part, "-"); ok {
-			// 范围：a-b
-			a, e1 := strconv.Atoi(before)
-			b, e2 := strconv.Atoi(after)
-			if e1 == nil && e2 == nil {
-				for v := a; v <= b; v++ {
-					result = append(result, v)
-				}
-			}
-			continue
-		}
-
-		// 纯数字
-		if n, err := strconv.Atoi(part); err == nil {
-			result = append(result, n)
-		}
-	}
-	return result
-}
-
-// intIn 判断 v 是否存在于 list 中。
-func intIn(v int, list []int) bool {
-	return slices.Contains(list, v)
 }
 
 // loadReportFallback 读取最新分析报告，提取流量与结束时间。

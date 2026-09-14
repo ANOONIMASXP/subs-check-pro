@@ -28,11 +28,6 @@ var IsSubStoreRunning atomic.Bool
 // currentLoonServer 持有当前运行中的 Loon 模拟服务
 var currentLoonServer atomic.Pointer[LoonServer]
 
-// 以下三个用于支撑 ReloadSubStoreEngine：资产更新后不重启进程也能让新脚本生效。
-var currentSubStorePaths atomic.Pointer[subStorePaths]
-var currentLoonStore atomic.Pointer[LoonKVStore]
-var currentSubLogger atomic.Pointer[slog.Logger]
-
 type subStorePaths struct {
 	substoreDir    string
 	jsPath         string
@@ -230,15 +225,6 @@ func startSubStore(ctx context.Context) error {
 	subLogger, logCloser := newSubStoreLogger(paths.logPath)
 	defer logCloser.Close()
 
-	currentSubStorePaths.Store(paths)
-	currentLoonStore.Store(store)
-	currentSubLogger.Store(subLogger)
-	defer func() {
-		currentSubStorePaths.Store(nil)
-		currentLoonStore.Store(nil)
-		currentSubLogger.Store(nil)
-	}()
-
 	// 单一未拆分脚本，不再需要 Simple/Core 两套引擎；
 	// NewLoonEngine 内部会同步完成 worker 池预热，见 loon_engine.go。
 	engine, err := NewLoonEngine(scriptSrc, "Sub-Store", store, subLogger)
@@ -336,35 +322,6 @@ func extractAssets(paths *subStorePaths) error {
 	if len(updatedLogs) > 0 {
 		slog.Info("Sub-Store 资源更新", updatedLogs...)
 	}
-	return nil
-}
-
-// ReloadSubStoreEngine 用磁盘上最新的 sub-store.min.js 重新构建一个 LoonEngine，
-// 并原子替换到当前运行中的 LoonServer 上——不需要重启进程。
-// 由 UpdateSubStoreAssets 在后端脚本更新成功后调用；服务未运行时直接跳过，
-// 下次启动会自然读取磁盘上的最新脚本。
-func ReloadSubStoreEngine() error {
-	server := currentLoonServer.Load()
-	if server == nil {
-		return nil
-	}
-	paths := currentSubStorePaths.Load()
-	store := currentLoonStore.Load()
-	logger := currentSubLogger.Load()
-	if paths == nil || store == nil || logger == nil {
-		return fmt.Errorf("Sub-Store 运行时状态不完整，无法热重载引擎")
-	}
-
-	scriptSrc, err := os.ReadFile(paths.jsPath)
-	if err != nil {
-		return fmt.Errorf("读取 Sub-Store 脚本失败: %w", err)
-	}
-	newEngine, err := NewLoonEngine(scriptSrc, "Sub-Store", store, logger)
-	if err != nil {
-		return fmt.Errorf("构建新 Sub-Store 引擎失败: %w", err)
-	}
-	server.UpdateEngine(newEngine)
-	slog.Info("Sub-Store 后端 已成功热重载并应用新版本")
 	return nil
 }
 

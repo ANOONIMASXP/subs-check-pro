@@ -19,7 +19,6 @@ require (
 	github.com/mattn/go-colorable v0.1.15
 	github.com/metacubex/mihomo v1.19.30
 	github.com/oschwald/maxminddb-golang/v2 v2.5.0
-	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/sinspired/checkip v0.5.3
 	golang.org/x/net v0.58.0
