@@ -82,7 +82,7 @@ builds:
       # 添加 tags 强制 Go 使用内置 DNS 解析，防止在没有 glibc 的系统上 DNS 解析失败
       - -tags=netgo,osusergo
     ldflags:
-      - -s -w -extldflags "-static -Wl,-z,stack-size=8388608" -X main.Version={{ .Version }} -X main.CurrentCommit={{ .ShortCommit }}
+      - -s -w -extldflags "-static -Wl,-z,stack-size=8388608" -X main.Version={{ .Version }}
 
   # 2. Windows 构建组 (使用 gnu 兼容层)
   - id: subs-check-pro-windows
@@ -100,7 +100,7 @@ builds:
       - -trimpath
     ldflags:
       # 切断对 Windows C 运行库的依赖
-      - -s -w -extldflags "-static" -X main.Version={{ .Version }} -X main.CurrentCommit={{ .ShortCommit }}
+      - -s -w -extldflags "-static" -X main.Version={{ .Version }}
 
   # 3. macOS 构建组
   - id: subs-check-pro-darwin
@@ -118,7 +118,7 @@ builds:
       - -trimpath
     ldflags:
       # macOS 苹果禁止静态链接，不能加 -extldflags "-static"
-      - -s -w -X main.Version={{ .Version }} -X main.CurrentCommit={{ .ShortCommit }}
+      - -s -w -X main.Version={{ .Version }}
 
 # 归档配置
 archives:

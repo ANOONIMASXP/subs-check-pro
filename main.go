@@ -19,9 +19,8 @@ func main() {
 	flag.Parse()
 
 	// 初始化应用
-	fullVersion := Version + "-" + CurrentCommit
-	application := app.New(fullVersion, *flagConfigPath)
-	slog.Info("当前版本", "Version", fullVersion)
+	application := app.New(Version, *flagConfigPath)
+	slog.Info("当前版本", "Version", Version)
 
 	if err := application.Initialize(); err != nil {
 		if errors.Is(err, app.ErrFirstRun) {

@@ -4,7 +4,6 @@
 
 param(
     [string]$Version,
-    [string]$Commit,
     [switch]$Clean,
     [switch]$Debug,
     [switch]$Experiment,
@@ -165,7 +164,7 @@ try {
             Write-Host "  -> 编译 $platformIdentifier ..." -ForegroundColor White
 
             # 针对不同平台的 ldflags 处理
-            $ldflags = "-s -w -X main.Version=$Version -X main.CurrentCommit=$Commit"
+            $ldflags = "-s -w -X main.Version=$Version"
             
             # Apple 官方强制要求依赖系统 libSystem 动态库，禁止全静态编译
             if ($target.GOOS -ne "darwin") {
