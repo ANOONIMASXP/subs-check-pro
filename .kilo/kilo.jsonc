@@ -1,0 +1,32 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "permission": {
+    "bash": {
+      "*": "ask",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git show*": "allow",
+      "git log*": "allow",
+      "git branch*": "allow",
+      "git remote -v*": "allow",
+      "git rev-parse*": "allow",
+      "git rev-list*": "allow",
+      "git ls-files*": "allow",
+      "git ls-tree*": "allow",
+      "git ls-remote*": "allow",
+      "git init*": "allow",
+      "git add*": "allow",
+      "git commit*": "allow",
+      "git config*": "allow",
+      "git remote add*": "allow",
+      "git fetch*": "allow",
+      "git cherry-pick*": "allow",
+      "git checkout*": "allow",
+      "git restore*": "allow",
+      "git rm*": "allow",
+      "git reset*": "allow",
+      "git stash*": "allow",
+      "git tag*": "allow"
+    }
+  }
+}

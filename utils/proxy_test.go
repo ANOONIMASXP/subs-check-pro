@@ -1,0 +1,641 @@
+package utils
+
+import (
+	"encoding/csv"
+	"fmt"
+	"log/slog"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/goccy/go-yaml"
+	"github.com/sinspired/subs-check-pro/v3/config"
+)
+
+func TestIsDirectProxyConfig(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "direct", input: "direct", want: true},
+		{name: "mixed case", input: " Direct ", want: true},
+		{name: "proxy url", input: "http://127.0.0.1:10808", want: false},
+		{name: "empty", input: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isDirectProxyConfig(tt.input); got != tt.want {
+				t.Fatalf("isDirectProxyConfig(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindGhProxy(t *testing.T) {
+	if len(GhProxies) == 0 {
+		t.Skip("GhProxies 为空，跳过测试")
+	}
+	runGhProxyDetection(t, GhProxies, "", "") // 使用默认文件名
+}
+
+func TestFindGhProxyFromConfig(t *testing.T) {
+	data, err := os.ReadFile("../config/config.yaml.example")
+	if err != nil {
+		t.Fatalf("读取配置文件失败: %v", err)
+	}
+
+	var cfg struct {
+		GhProxyGroup []string `yaml:"ghproxy-group"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("解析 yaml 失败: %v", err)
+	}
+
+	if len(cfg.GhProxyGroup) == 0 {
+		t.Fatal("config.yaml.example 中未找到 ghproxy-group 配置")
+	}
+
+	t.Logf("共找到 %d 个候选代理", len(cfg.GhProxyGroup))
+	runGhProxyDetection(t, cfg.GhProxyGroup, "test_gh_config.csv", "test_gh_config_detail.csv")
+}
+
+// runGhProxyDetection 并发检测候选代理，输出两个 csv 文件并设置最佳代理
+func runGhProxyDetection(t *testing.T, proxies []string, listFile, detailFile string) {
+	if listFile == "" {
+		listFile = "test_gh_default.csv"
+	}
+	if detailFile == "" {
+		detailFile = "test_gh_default_detail.csv"
+	}
+	t.Helper()
+
+	// 去除尾部 / 后去重
+	normalized := make([]string, len(proxies))
+	for i, p := range proxies {
+		normalized[i] = strings.TrimRight(p, "/")
+	}
+	unique := deduplicateStrings(normalized)
+	if diff := len(proxies) - len(unique); diff > 0 {
+		t.Logf("已去除 %d 个重复代理，剩余 %d 个", diff, len(unique))
+	}
+	proxies = unique
+
+	type result struct {
+		proxy     string
+		ok        bool
+		cost      time.Duration
+		speedKBps float64
+	}
+
+	score := func(r result) float64 {
+		return r.speedKBps*0.7 + (1.0/r.cost.Seconds())*0.3
+	}
+
+	resultCh := make(chan result, len(proxies))
+	var wg sync.WaitGroup
+
+	for _, proxy := range proxies {
+		wg.Add(1)
+		go func(p string) {
+			defer wg.Done()
+			start := time.Now()
+			ok, normalized, speedKBps := checkGhProxyAvailable(p)
+			resultCh <- result{proxy: normalized, ok: ok, cost: time.Since(start), speedKBps: speedKBps}
+		}(proxy)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	var best result
+	var bestScore float64
+	var allAvailable []result
+
+	for r := range resultCh {
+		if r.ok {
+			slog.Info("",
+				"可用代理", r.proxy,
+				"耗时", fmt.Sprintf("%dms", r.cost.Milliseconds()),
+				"速度", fmt.Sprintf("%.1fKB/s", r.speedKBps),
+			)
+			allAvailable = append(allAvailable, r)
+			if s := score(r); s > bestScore {
+				bestScore = s
+				best = r
+			}
+		}
+	}
+
+	if len(allAvailable) == 0 {
+		slog.Debug("未找到可用的 githubproxy")
+		return
+	}
+
+	config.GlobalConfig.GithubProxy = best.proxy
+	slog.Info("最佳GitHub代理",
+		"githubproxy", best.proxy,
+		"耗时", fmt.Sprintf("%dms", best.cost.Milliseconds()),
+		"速度", fmt.Sprintf("%.1fKB/s", best.speedKBps),
+	)
+
+	sort.Slice(allAvailable, func(i, j int) bool {
+		return score(allAvailable[i]) > score(allAvailable[j])
+	})
+
+	writeCSV := func(filename string, header []string, rows func(r result) []string) {
+		f, err := os.Create(filename)
+		if err != nil {
+			t.Fatalf("创建文件 %s 失败: %v", filename, err)
+		}
+		defer f.Close()
+		w := csv.NewWriter(f)
+		defer w.Flush()
+		if header != nil {
+			if err := w.Write(header); err != nil {
+				slog.Error("写入 header 失败: " + err.Error())
+				return
+			}
+		}
+
+		for _, r := range allAvailable {
+			if err := w.Write(rows(r)); err != nil {
+				slog.Error("写入 header 失败: " + err.Error())
+				return
+			}
+		}
+	}
+
+	writeCSV(listFile, nil, func(r result) []string {
+		return []string{fmt.Sprintf("- %s", r.proxy)}
+	})
+
+	writeCSV(detailFile,
+		[]string{"Proxy", "Cost(ms)", "Speed(KB/s)", "Score"},
+		func(r result) []string {
+			return []string{
+				r.proxy,
+				fmt.Sprintf("%d", r.cost.Milliseconds()),
+				fmt.Sprintf("%.1f", r.speedKBps),
+				fmt.Sprintf("%.2f", score(r)),
+			}
+		},
+	)
+
+	t.Logf("已输出 %d 个可用代理，列表: %s，详情: %s", len(allAvailable), listFile, detailFile)
+}
+
+// deduplicateStrings 对字符串切片去重，保持原有顺序
+func deduplicateStrings(ss []string) []string {
+	seen := make(map[string]struct{}, len(ss))
+	out := ss[:0:0] // 复用底层数组但不修改原切片
+	for _, s := range ss {
+		if _, exists := seen[s]; !exists {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// GitHub 代理列表
+var GhProxies = []string{
+	"https://gh-proxy.com",
+	"gh-proxy.org",
+	"cdn.gh-proxy.org",
+	"axisnow.gh-proxy.org",
+	"api.gitproxy.dev",
+	"githubdog.com",
+	"1.github.010716.xyz",
+	"113355.kabaka.xyz",
+	"80888888.xyz",
+	"aa.w0x7ce.eu",
+	"acc.meiqer.com",
+	"api-ghp.fjy.zone",
+	"armg1.jyhk.tk",
+	"armg2.jyhk.tk",
+	"b.yesican.top",
+	"bakht1.jsdelivr.fyi",
+	"bakht2.jsdelivr.fyi",
+	"bakht3.jsdelivr.fyi",
+	"booster.ookkk.ggff.net",
+	"c.gatepro.cn",
+	"cc.ikakatoo.us",
+	"ccgit1.5gyh.cf",
+	"ccgit2.5gyh.cf",
+	"cdn-gh.141888.xyz",
+	"cfghproxy.165683.xyz",
+	"chirophy.online",
+	"choner.eu.org",
+	"d.scyun.top",
+	"daili.6dot.cn",
+	"dh.guluy.top",
+	"dh.jeblove.com",
+	"dl.github.mirror.shalo.link",
+	"dnsvip.uk",
+	"docker.bkxhkoo.com",
+	"docker.ppp.ac.cn",
+	"down.avi.gs",
+	"download.ojbk.one",
+	"download.serein.cc",
+	"f.shenbing.nyc.mn",
+	"fastgithub.starryfun.icu",
+	"file.justgame.top",
+	"ft.v1k1.xin",
+	"fuck-flow.nobige.cn",
+	"g.108964.xyz",
+	"g.blfrp.cn",
+	"g.bravexist.cn",
+	"g.down.0ms.net",
+	"g.jscdn.cn",
+	"g.yeyuqiufeng.cn",
+	"gh.136361.xyz",
+	"gh.13x.plus",
+	"gh.19121912.xyz",
+	"gh.193.gs",
+	"gh.220106.xyz",
+	"gh.222322.xyz",
+	"gh.244224659.xyz",
+	"gh.2i.gs",
+	"gh.316688.xyz",
+	"gh.321122.xyz",
+	"gh.334433.xyz",
+	"gh.39.al",
+	"gh.518298.xyz",
+	"gh.52099520.xyz",
+	"gh.654535.xyz",
+	"gh.777000.best",
+	"gh.799154.xyz",
+	"gh.860686.xyz",
+	"gh.8p.gs",
+	"gh.960980.xyz",
+	"gh.accn.eu.org",
+	"gh.amirrors.com",
+	"gh.andiest.com",
+	"gh.aurzex.top",
+	"gh.avmine.com",
+	"gh.b52m.cn",
+	"gh.bhexo.cn",
+	"gh.cdn.fullcone.cn",
+	"gh.chewable.eu.org",
+	"gh.chillwaytech.com",
+	"gh.cnbattle.com",
+	"gh.crond.dev",
+	"gh.dev.438250.xyz",
+	"gh.duang.io",
+	"gh.duckcc.com",
+	"gh.dwsy.link",
+	"gh.ecdn.ip-ddns.com",
+	"gh.flewsea.news",
+	"gh.flewsea.pw",
+	"gh.flyrr.cc",
+	"gh.gongyi.tk",
+	"gh.gorun.eu.org",
+	"gh.gxb.pub",
+	"gh.haloless.com",
+	"gh.heshiheng.top",
+	"gh.hitcs.cc",
+	"gh.i3.pw",
+	"gh.ibridge.eu.org",
+	"gh.iinx.top",
+	"gh.j8.work",
+	"gh.jadelive.top",
+	"gh.jscdn.cn",
+	"gh.jxq.io",
+	"gh.kejilion.pro",
+	"gh.kemon.ai",
+	"gh.kmxm.online",
+	"gh.lib.cx",
+	"gh.lkwplus.com",
+	"gh.lux1983.com",
+	"gh.luzy.top",
+	"gh.lyh.moe",
+	"gh.miaomiao.video",
+	"gh.micedns.cloudns.org",
+	"gh.mirror.190211.xyz",
+	"gh.mirror.coolfeature.top",
+	"gh.moetools.net",
+	"gh.momonomi.xyz",
+	"gh.mrskye.cn",
+	"gh.mtx72.cc",
+	"gh.nekhill.top",
+	"gh.nekorect.eu.org",
+	"gh.nextfuture.top",
+	"gh.oevery.me",
+	"gh.oneproxy.top",
+	"gh.opsproxy.com",
+	"gh.osspub.cn",
+	"gh.padao.fun",
+	"gh.prlrr.com",
+	"gh.pylas.xyz",
+	"gh.qptf.eu.org",
+	"gh.qsd.onl",
+	"gh.qsq.one",
+	"gh.rem.asia",
+	"gh.riye.de",
+	"gh.scy.ink",
+	"gh.someo.top",
+	"gh.stanl.ee",
+	"gh.stewitch.com",
+	"gh.suite.eu.org",
+	"gh.tbw.wiki",
+	"gh.tou.lu",
+	"gh.tryxd.cn",
+	"gh.uclort.com",
+	"gh.wglee.org",
+	"gh.wowforever.xyz",
+	"gh.wuuu.cc",
+	"gh.wwang.de",
+	"gh.wygg.us.kg",
+	"gh.xbzza.cn",
+	"gh.xda.plus",
+	"gh.yahool.com.cn",
+	"gh.yushum.com",
+	"ghac.760710.xyz",
+	"ghacc.cpuhk.eu.org",
+	"ghb.wglee.org",
+	"gh-boost.oneboy.app",
+	"gh-deno.mocn.top",
+	"ghfast.top",
+	"ghjs.131412.eu.org",
+	"ghp.618032.xyz",
+	"ghp.9e6.site",
+	"ghp.dnsplus.uk",
+	"ghp.fit2.fun",
+	"ghp.imc.re",
+	"ghp.jokeme.top",
+	"ghp.lanchonghai.com",
+	"ghp.miaostay.com",
+	"ghp.opendatahub.xyz",
+	"ghp.pbren.com",
+	"ghp.src.moe",
+	"ghp.tryanks.com",
+	"ghp.vatery.com",
+	"ghp.xiaopan.ai",
+	"ghp.ybot.xin",
+	"ghp.yeye.f5.si",
+	"ghproxy.0081024.xyz",
+	"ghproxy.053000.xyz",
+	"ghproxy.200502.xyz",
+	"ghproxy.943689.xyz",
+	"ghproxy.alltobid.cc",
+	"ghproxy.amayakite.xyz",
+	"ghproxy.bugungu.top",
+	"gh-proxy.dorz.tech",
+	"ghproxy.dsdog.tk",
+	"ghproxy.ducknet.work",
+	"ghproxy.gopher.ink",
+	"ghproxy.gpnu.org",
+	"ghproxy.hoshizukimio.top",
+	"gh-proxy.iflyelf.com",
+	"ghproxy.imoyuapp.win",
+	"gh-proxy.jacksixth.top",
+	"gh-proxy.jmper.me",
+	"ghproxy.joylian.com",
+	"gh-proxy.just520.top",
+	"ghproxy.licardo.vip",
+	"gh-proxy.mereith.com",
+	"ghproxy.minge.dev",
+	"ghproxy.missfuture.eu.org",
+	"ghproxy.moweilong.com",
+	"ghproxy.nanakorobi.com",
+	"ghproxy.net",
+	"gh-proxy.not.icu",
+	"ghproxy.ownyuan.top",
+	"gh-proxy.rxliuli.com",
+	"ghproxy.sakuramoe.dev",
+	"ghproxy.smallfawn.work",
+	"ghproxy.sveir.xyz",
+	"ghproxy.temoa.fun",
+	"ghproxy.thefoxnet.com",
+	"ghproxy.tracemouse.top",
+	"ghproxy.txq.life",
+	"ghproxy.viper.pub",
+	"ghproxy.vyronlee-lab.com",
+	"ghproxy.weizhiwen.net",
+	"ghproxy.wjsphy.top",
+	"ghproxy.workers.haoutil.com",
+	"ghproxy.xiaohei-studio-chatgpt-proxy.com.cn",
+	"gh-proxy.yuntao.me",
+	"git.1999111.xyz",
+	"git.22345678.xyz",
+	"git.40609891.xyz",
+	"git.5gyh.cf",
+	"git.988896.xyz",
+	"git.aaltozz.info",
+	"git.acap.cc",
+	"git.amoluo.win",
+	"git.anye.in",
+	"git.binbow.link",
+	"git.blaow.cloudns.org",
+	"git.closersyu.top",
+	"git.ifso.site",
+	"git.imvery.moe",
+	"git.ixdd.de",
+	"git.ldvx.de",
+	"git.lincloud.pro",
+	"git.liunasc.xyz",
+	"git.llvho.com",
+	"git.loushi.site",
+	"git.lzzz.ink",
+	"git.maomao.ovh",
+	"git.mokoc.live",
+	"git.niege.app",
+	"git.nyar.work",
+	"git.o8.cx",
+	"git.outtw.com",
+	"git.ppp.ac.cn",
+	"git.repcz.link",
+	"git.txaff.com",
+	"git.verynb.org",
+	"git.wsl.icu",
+	"git.wyy.sh",
+	"git.xiny.eu.org",
+	"git.xuantan.icu",
+	"git.zlong.eu.org",
+	"git3.openapi.site",
+	"git-clone.ccrui.dev",
+	"github.08050611.xyz",
+	"github.143760.xyz",
+	"github.170011.xyz",
+	"github.17263241.xyz",
+	"github.180280.xyz",
+	"github.197909.xyz",
+	"github.19890821.xyz",
+	"github.201068.xyz",
+	"github.333033.xyz",
+	"github.4240333.xyz",
+	"github.564456.xyz",
+	"github.732086.xyz",
+	"github.776884.xyz",
+	"github.789056.xyz",
+	"github.818668.xyz",
+	"github.8void.sbs",
+	"github.9394961.xyz",
+	"github.960118.xyz",
+	"github.abyss.moe",
+	"github.atzzz.com",
+	"github.axcio.dns-dynamic.net",
+	"github.boki.moe",
+	"github.boringhex.top",
+	"github.bullb.net",
+	"github.c1g.top",
+	"github.cf.xihale.top",
+	"github.chasun.top",
+	"github.chuancey.eu.org",
+	"github.cnxiaobai.com",
+	"github.computerqwq.top",
+	"github.cswklt.top",
+	"github.ctios.cn",
+	"github.ddlink.asia",
+	"github.dockerspeed.site",
+	"github.eejsq.net",
+	"github.ffffffff0x.com",
+	"github.gdzja.site",
+	"github.haodiy.xyz",
+	"github.hhh.sd",
+	"github.hi.edu.rs",
+	"github.hostscc.top",
+	"github.hx208.top",
+	"github.ilxyz.xyz",
+	"github.intellisensing.tech",
+	"github.jerryliang.win",
+	"github.jimmyshjj.top",
+	"github.jinenyy.vip",
+	"github.jscdn.cn",
+	"github.kidos.top",
+	"github.kuugo.top",
+	"github.lao.plus",
+	"github.mayx.eu.org",
+	"github.mirror.qlnu-sec.cn",
+	"github.mirror.vurl.eu.org",
+	"github.mirrors.hikafeng.com",
+	"github.mistudio.top",
+	"github.orangbus.cn",
+	"github.pipers.cn",
+	"github.proxy.zerozone.tech",
+	"github.pxy.lnsee.com",
+	"github.quickso.net",
+	"github.ruxi.org",
+	"github.sagolu.top",
+	"github.serein.cc",
+	"github.snakexgc.com",
+	"github.space520.eu.org",
+	"github.sssss.work",
+	"github.static.cv",
+	"github.suyijun.top",
+	"github.try255.com",
+	"github.unipus.site",
+	"github.verynb.org",
+	"github.vipchanel.com",
+	"github.widiazine.top",
+	"github.workers.lv10.ren",
+	"github.workersnail.com",
+	"github.xin-yu.cloud",
+	"github.xiongmx.com",
+	"github.xwb009.xyz",
+	"github.xxlab.tech",
+	"github.xxqq.de",
+	"github.xykcloud.com",
+	"github.yeep6.eu.org",
+	"github.ylyhtools.top",
+	"github.yoloarea.com",
+	"github.yunfile.fun",
+	"github.zhaolele.top",
+	"github.zhou2008.cn",
+	"github.zhulin240520.buzz",
+	"github.zyhmifan.top",
+	"githubacc.caiaiwan.com",
+	"githubapi.jjchizha.com",
+	"githubgo.856798.xyz",
+	"github-proxy.ai-lulu.top",
+	"github-proxy.caoayu.top",
+	"github-proxy.explorexd.uk",
+	"github-proxy.fjiabinc.cn",
+	"github-proxy.sharefree.site",
+	"githubproxy.unix.do",
+	"github-quick.1ms.dev",
+	"github-raw-download.nekhill.top",
+	"githubsg.lilyya.top",
+	"gitproxy.mrhjx.cn",
+	"gitproxy.ozoo.top",
+	"godlike.ezpull.top",
+	"gp.19841106.xyz",
+	"gp.dahe.now.cc",
+	"gp.daxei.now.cc",
+	"g-p.loli.us",
+	"gp.ownorigin.top",
+	"gt.changqqq.xyz",
+	"gxb.pub",
+	"hay.uxio.cn",
+	"hg.19840228.top",
+	"hh.newhappy.cf",
+	"hk.114914.xyz",
+	"hub.12138.3653655.xyz",
+	"hub.326998.xyz",
+	"hub.885666.xyz",
+	"hub.fnas64.xin",
+	"hub.jeblove.com",
+	"hub.naloong.de",
+	"hub.vps.861020.xyz",
+	"hub.vvn.me",
+	"hub.why-ing.top",
+	"hub.xjl.ch",
+	"jh.ussh.net",
+	"jias.ayanjiu.top",
+	"jiasu.iwtriptqt1016.eu.org",
+	"jiasughapi.lingjun.cc",
+	"jiasuqi.167889.xyz",
+	"jisuan.xyz",
+	"js.wd666.cloudns.biz",
+	"l0l0l.cc",
+	"m.seafood.loan",
+	"mc.cn.eu.org",
+	"mdv.162899.xyz",
+	"micromatrix.gq",
+	"mip.cnzzla.com",
+	"my.iiso.site",
+	"my.losesw.live",
+	"mygh.api.xiaomao.eu.org",
+	"nav.253874.net",
+	"nav.cxycsx.vip",
+	"nav.gjcloak.xyz",
+	"nav.hgd1999.com",
+	"nav.hoiho.cn",
+	"nav.syss.fun",
+	"nav.tossp.com",
+	"nav.wxapp.xyz",
+	"nav.yyxw.tk",
+	"navs.itmax.cn",
+	"neoz.chat",
+	"noad.keliyan.top",
+	"node2.txq.life",
+	"or.tianba.eu.org",
+	"p.jackyu.cn",
+	"privateghproxy.iil.im",
+	"proxy.191027.xyz",
+	"proxy.atoposs.com",
+	"proxy.ccc8.vip",
+	"proxy.dragontea.cc",
+	"proxy.fakups.cn",
+	"proxydl.lcayun.cn",
+	"proxy-gh.1l1.icu",
+	"q-github.cnxiaobai.com",
+	"ql.l50.top",
+	"raw.nmd.im",
+	"rst.567812.xyz",
+	"static.kaixinwu.vip",
+	"static.yiwangmeng.com",
+	"t.992699.xyz",
+	"tpe.corpa.me",
+	"tube.20140301.xyz",
+	"vps.pansen626.com",
+	"wfgithub.xiaonuomi.ie.eu.org",
+	"github.dpik.top",
+}

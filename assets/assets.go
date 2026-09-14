@@ -1,0 +1,11 @@
+package assets
+
+import (
+	_ "embed"
+)
+
+//go:embed backend.version
+var EmbeddedSubStoreBackendVer []byte
+
+//go:embed sub-store.min.js
+var EmbeddedSubStore []byte

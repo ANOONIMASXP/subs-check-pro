@@ -1,0 +1,148 @@
+// Package config 解析配置文件
+package config
+
+import (
+	_ "embed"
+)
+
+type Config struct {
+	PrintProgress        bool    `yaml:"print-progress"`
+	ProgressMode         string  `yaml:"progress-mode"`
+	Concurrent           int     `yaml:"concurrent"`
+	AliveConcurrent      int     `yaml:"alive-concurrent"`
+	SpeedConcurrent      int     `yaml:"speed-concurrent"`
+	MediaConcurrent      int     `yaml:"media-concurrent"`
+	EnableIPv6           bool    `yaml:"ipv6"`
+	CheckInterval        int     `yaml:"check-interval"`
+	CronExpression       string  `yaml:"cron-expression"`
+	Timeout              int     `yaml:"timeout"`
+	SpeedTestURL         string  `yaml:"speed-test-url"`
+	DownloadTimeout      int     `yaml:"download-timeout"`
+	DownloadMB           int     `yaml:"download-mb"`
+	TotalSpeedLimit      int     `yaml:"total-speed-limit"`
+	Threshold            float32 `yaml:"threshold"`
+	GCThreshold          int64   `yaml:"gc-threshold"`
+	MinSpeed             int     `yaml:"min-speed"`
+	MediaCheckTimeout    int     `yaml:"media-check-timeout"`
+	FilterRegex          string  `yaml:"filter-regex"`
+	GithubToken          string  `yaml:"github-token"`
+	GithubAPIMirror      string  `yaml:"github-api-mirror"`
+	SubUrlsReTry         int     `yaml:"sub-urls-retry"`
+	SubUrlsRetryInterval int     `yaml:"sub-urls-retry-interval"`
+	SubUrlsTimeout       int     `yaml:"sub-urls-timeout"`
+
+	// SubsParseBatch 每批次发往去重队列的节点数
+	// 生产者攒够该数量后整批发送，消费者逐批接收处理。
+	// 在两次 FreeOSMemory 之间，流水线最多同时驻留 (并发数 + chanBuf) × batchSize 个节点。
+	// 太小→channel 调度频繁；太大→流水线底座内存随之线性增大。
+	// 默认 3000
+	SubsParseBatch int `yaml:"subs-parse-batch"`
+
+	// SubsDedupeBatch 消费者每处理多少节点触发一次 debug.FreeOSMemory()，控制内存归还 OS 的频率。
+	// 越小→归还越频繁，峰值越低，GC 停顿越多；越大→峰值越高，停顿越少。
+	// 默认 100000，建议范围 20000–500000。0 或负数视为默认值。
+	SubsDedupeBatch int `yaml:"subs-dedupe-batch"`
+
+	// MemoryLimitMB 设置 Go 运行时软内存上限（GOMEMLIMIT，单位 MB）。
+	// 0 = 不显式配置，按以下优先级自动决定：
+	//   Docker 容器：GOMEMLIMIT 环境变量 > cgroup 内存限制(打七五折)
+	//   普通主机：系统物理内存打七五折
+	MemoryLimitMB int `yaml:"memory-limit-mb"`
+
+	// GCPercent 对应 Go 的 GOGC：堆允许长到存活对象的多少倍才触发下一次 GC，
+	// 不是"空闲内存百分比"。值越小 GC 越频繁、内存峰值越低、CPU 开销略增。
+	// 默认 70（Go 默认是 100）。<=0 时使用 Go 默认值 100。
+	// 注意：真正防止 OOM 的是 MemoryLimitMB；这个只是日常情况下的内存/CPU 取舍旋钮。
+	GCPercent int `yaml:"gc-percent"`
+
+	SubUrlsRemote      []string `yaml:"sub-urls-remote"`
+	SubUrls            []string `yaml:"sub-urls"`
+	SuccessRate        float64  `yaml:"success-rate"`
+	MihomoAPIURL       string   `yaml:"mihomo-api-url"`
+	MihomoAPISecret    string   `yaml:"mihomo-api-secret"`
+	ListenPort         string   `yaml:"listen-port"`
+	RenameNode         bool     `yaml:"rename-node"`
+	KeepSuccessProxies bool     `yaml:"keep-success-proxies"`
+	OutputDir          string   `yaml:"output-dir"`
+	// ConfigDir 运行时由 app.loadConfig 注入，值为当前配置文件所在目录。
+	// 不参与 YAML 序列化，仅供 save/method/local.go 计算默认输出路径使用。
+	ConfigDir           string `yaml:"-"`
+	SubStoreUpdateCron  string `yaml:"sub-store-update-cron"`
+	SubStorePort        string `yaml:"sub-store-port"`
+	SubStorePath        string `yaml:"sub-store-path"`
+	SubStoreSyncCron    string `yaml:"sub-store-sync-cron"`
+	SubStorePushService string `yaml:"sub-store-push-service"`
+	SubStoreProduceCron string `yaml:"sub-store-produce-cron"`
+
+	// ISPCheck 是否开启出口 ISP 类型检测（机房/住宅/移动/商宽/教育/政府/银行等）
+	ISPCheck bool `yaml:"isp-check"`
+
+	// ISPTimeout 是 ISP 检查的超时时间，单位为秒
+	ISPTimeout int `yaml:"isp-timeout"`
+
+	// 以下四个渠道的 apikey 均为可选：留空则该渠道自动跳过，不参与轮询。
+	// 建议至少配置 2 个渠道，通过轮询F叠加每日免费额度，并在某一渠道
+	// 请求失败（超额 / 网络错误）时自动切换到下一个渠道。
+
+	// ISPCheckAPIKeyIPAPI ipapi.is 的 apikey（https://ipapi.is）
+	// 免费额度：注册后每天 1000 次
+	ISPCheckAPIKeyIPAPI string `yaml:"isp-check-api-key-ipapi"`
+
+	// ISPCheckAPIKeyProxyCheck proxycheck.io 的 apikey（https://proxycheck.io）
+	// 免费额度：每天 1000 次（另有约 5 倍的突发令牌可用）
+	ISPCheckAPIKeyProxyCheck string `yaml:"isp-check-api-key-proxycheck"`
+
+	// ISPCheckAPIKeyIPLocate iplocate.io 的 apikey（https://iplocate.io）
+	// 免费额度：每天 1000 次，免费版与付费版字段完全一致
+	ISPCheckAPIKeyIPLocate string `yaml:"isp-check-api-key-iplocate"`
+
+	// ISPCheckAPIKeyIPData ipdata.co 的 apikey（https://ipdata.co）
+	// 免费额度：每天 1500 次（或每月 45000 次）
+	ISPCheckAPIKeyIPData string `yaml:"isp-check-api-key-ipdata"`
+
+	MediaCheck       bool     `yaml:"media-check"`
+	Platforms        []string `yaml:"platforms"`
+	MaxMindDBPath    string   `yaml:"maxmind-db-path"`
+	DropBadCfNodes   bool     `yaml:"drop-bad-cf-nodes"`
+	EnhancedTag      bool     `yaml:"enhanced-tag"`
+	SuccessLimit     int32    `yaml:"success-limit"`
+	NodePrefix       string   `yaml:"node-prefix"`
+	NodeType         []string `yaml:"node-type"`
+	NodeLoc          []string `yaml:"node-loc"`
+	SharePassword    string   `yaml:"share-password"`
+	CallbackScript   string   `yaml:"callback-script"`
+	SystemProxy      string   `yaml:"system-proxy"`
+	GithubProxy      string   `yaml:"github-proxy"`
+	GithubProxyGroup []string `yaml:"ghproxy-group"`
+}
+
+var OriginDefaultConfig = &Config{
+	ListenPort: ":8199",
+	Platforms: []string{
+		"iprisk",
+		"openai",
+		"gemini",
+		"youtube",
+	},
+	DownloadMB: 20,
+
+	Threshold:   0.75,
+	GCThreshold: 20000,
+
+	// 每个线程获取3000个节点时进入一次去重队列
+	SubsParseBatch: 3000,
+
+	// 10 万原始节点触发一次；百万量级约 10 次 GC，CPU 开销可忽略
+	SubsDedupeBatch: 100000,
+
+	// Sub-Store 资源默认每周五更新
+	SubStoreUpdateCron: "14 13 * * 5",
+
+	ISPTimeout: 5, // 默认 5 秒，最高 15 秒
+}
+
+// GlobalConfig 指向当前生效配置
+var GlobalConfig = &Config{} // 初始化为空，首次加载后赋值
+
+//go:embed config.yaml.example
+var DefaultConfigTemplate []byte

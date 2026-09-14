@@ -1,0 +1,110 @@
+package method
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+
+	"github.com/sinspired/subs-check-pro/v3/config"
+	"github.com/sinspired/subs-check-pro/v3/utils"
+)
+
+// StatsSaver 处理本地文件保存的结构体
+type StatsSaver struct {
+	BasePath  string
+	StatsPath string
+}
+
+// NewStatsSaver 创建新的本地保存器
+func NewStatsSaver() (*StatsSaver, error) {
+	basePath := utils.GetExecutablePath()
+	if basePath == "" {
+		return nil, fmt.Errorf("获取可执行文件路径失败")
+	}
+
+	var outputPath string
+	defaultConfigDir := filepath.Join(basePath, "config")
+
+	switch {
+	case config.GlobalConfig.OutputDir != "":
+		// 用户在配置文件中显式设置了输出目录，直接使用
+		outputPath = config.GlobalConfig.OutputDir
+	case config.GlobalConfig.ConfigDir != "" && config.GlobalConfig.ConfigDir != defaultConfigDir:
+		// 用户主动选择了非默认位置的配置文件，输出目录跟随配置文件所在目录。
+		// 默认位置（<exe>/config/）保持原有 <exe>/output/ 行为，不破坏现有部署。
+		outputPath = filepath.Join(config.GlobalConfig.ConfigDir, outputDirName)
+	default:
+		outputPath = filepath.Join(basePath, outputDirName)
+	}
+
+	statsPath := filepath.Join(outputPath, "stats")
+	return &StatsSaver{
+		BasePath:  basePath,
+		StatsPath: statsPath,
+	}, nil
+}
+
+// SaveToStats 保存配置到本地文件
+func SaveToStats(yamlData []byte, filename, message string) error {
+	saver, err := NewStatsSaver()
+	if err != nil {
+		return fmt.Errorf("创建本地保存器失败: %w", err)
+	}
+
+	return saver.Save(yamlData, filename, message)
+}
+
+// Save 执行保存操作
+func (ls *StatsSaver) Save(yamlData []byte, filename, message string) error {
+	// 确保输出目录存在
+	if err := ls.ensureStatsDir(); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
+
+	// 验证输入参数
+	if err := ls.validateInput(yamlData, filename); err != nil {
+		return err
+	}
+
+	// 构建文件路径并保存
+	filepath := filepath.Join(ls.StatsPath, filename)
+
+	if err := os.WriteFile(filepath, yamlData, fileMode); err != nil {
+		return fmt.Errorf("写入文件失败 [%s]: %w", filename, err)
+	}
+	if message == "" {
+		message = "保存订阅统计成功"
+	}
+	slog.Info(message, "路径", filepath)
+
+	return nil
+}
+
+// ensureStatsDir 确保输出目录存在
+func (ls *StatsSaver) ensureStatsDir() error {
+	if _, err := os.Stat(ls.StatsPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(ls.StatsPath, dirMode); err != nil {
+			return fmt.Errorf("创建目录失败 [%s]: %w", ls.StatsPath, err)
+		}
+	}
+	return nil
+}
+
+// validateInput 验证输入参数
+func (ls *StatsSaver) validateInput(yamlData []byte, filename string) error {
+	if len(yamlData) == 0 {
+		return fmt.Errorf("yaml数据为空")
+	}
+
+	if filename == "" {
+		return fmt.Errorf("filename不能为空")
+	}
+
+	// 检查文件名是否包含非法字符
+	if filepath.Base(filename) != filename {
+		return fmt.Errorf("filename包含非法字符: %s", filename)
+	}
+
+	return nil
+}
