@@ -63,6 +63,7 @@ type lastCheckResult struct {
 	duration  atomic.Int64
 	Total     atomic.Int64
 	available atomic.Int64
+	traffic   atomic.Int64
 }
 
 // New 创建新的应用实例
@@ -378,6 +379,7 @@ func (app *App) checkProxies() error {
 	app.lastCheck.duration.Store(int64(endTime.Sub(startTime).Seconds()))
 	app.lastCheck.Total.Store(int64(check.ProxyCount.Load()))
 	app.lastCheck.available.Store(int64(len(results)))
+	app.lastCheck.traffic.Store(int64(check.TotalBytes.Load()))
 
 	check.CurrentStepName.Store("内存释放")
 	// 切断所有大对象的应用
