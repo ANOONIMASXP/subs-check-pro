@@ -109,7 +109,6 @@ type Config struct {
 	NodePrefix       string   `yaml:"node-prefix"`
 	NodeType         []string `yaml:"node-type"`
 	NodeLoc          []string `yaml:"node-loc"`
-	SharePassword    string   `yaml:"share-password"`
 	CallbackScript   string   `yaml:"callback-script"`
 	SystemProxy      string   `yaml:"system-proxy"`
 	GithubProxy      string   `yaml:"github-proxy"`

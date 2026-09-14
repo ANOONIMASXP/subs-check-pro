@@ -58,7 +58,7 @@ success-limit: 100
 # 如果为true，则保留之前测试成功的节点
 # 避免因为上游链接更新，导致可用节点丢失
 # 本项目已移除未经验证的 /all.yaml /sub/all.yaml访问
-# 可放心设置CF Tunnel隧道,在外网访问、修改配置、分享订阅
+# 可放心设置CF Tunnel隧道,在外网访问、修改配置
 keep-success-proxies: true
 
 # -----------下载参数-----------
@@ -100,16 +100,7 @@ gc-threshold: 20000
 # 监听端口，用于直接返回节点信息，方便订阅转换
 # 注意：为方便小白默认监听0.0.0.0:8199，请自行修改
 # 更新需重启程序
-# 本项目移除了对output目录的无限制访问，如确需暴露文件，请将文件放在 output/more 文件夹下
-# 例如:  http://127.0.0.1:8199/more/很多节点.yaml
-# 或设置 share-password 分享订阅
 listen-port: ':8199'
-
-# 如果你要分享订阅，请设置订阅分享密码
-# 访问 http://127.0.0.1:8199/sub 验证后查看分享的订阅文件列表
-# 文件位置放在 output/sub/filename.yaml
-# 比如: http://127.0.0.1:8199/sub/{share-password}/all.yaml
-share-password: ''
 
 # -----------SUB-STORE-----------
 # Sub-Store 前后端资源自动更新任务
@@ -119,9 +110,8 @@ sub-store-update-cron: '14 13 * * 5'
 # 更新需重启程序，不可监听局域网IP，只有三种写法 :8299, 127.0.0.1:8299, 0.0.0.0:8299
 sub-store-port: ':8299'
 # sub-store自定义访问路径，后续访问订阅要带上此路径
-# 设置path之后，可以开启订阅分享功能，无需暴露真实的path
+# 设置path之后，无需暴露真实的path
 # 订阅示例：http://127.0.0.1:8299/{sub-store-path}/api/file/mihomo
-# WebUI 支持分享订阅，直接复制订阅链接
 # {建议设置}：首次运行如未设置将自动生成随机路径
 # sub-store-path: '/path'
 sub-store-path: ''
@@ -326,7 +316,6 @@ sub-urls-remote:
   # - 'https://example.com/sub-list.txt'
   # - 'https://example.com/sub-list.yaml'
   # - 'https://raw.githubusercontent.com/beck-8/sub-urls/main/%E5%B0%8F%E8%80%8C%E7%BE%8E.txt'
-  # - 'http://localhost:8199/more/extra.txt'
   - 'https://raw.githubusercontent.com/sinspired/airport/main/subs/merged/col.txt'
   - 'https://raw.githubusercontent.com/sinspired/airport/main/subs/merged/cm.txt'
   - 'https://raw.githubusercontent.com/sinspired/airport/main/subs/merged/scan.txt'

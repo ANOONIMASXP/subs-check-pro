@@ -3,8 +3,6 @@ package app
 
 import (
 	"fmt"
-	"html/template"
-	"io/fs"
 	"log/slog"
 	"mime"
 	"net"
@@ -16,7 +14,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-yaml"
-	"github.com/sinspired/subs-check-pro-webui/webui"
 	"github.com/sinspired/subs-check-pro/v3/check"
 	"github.com/sinspired/subs-check-pro/v3/config"
 	"github.com/sinspired/subs-check-pro/v3/save/method"
@@ -26,13 +23,7 @@ import (
 const (
 	DefaultPort     = ":8199"
 	LogTimeFormat   = "2006-01-02 15:04:05"
-	ShareDirName    = "more"
-	TemplatePattern = "templates/*.html"
-	StaticPrefix    = "/static"
 	SubPath         = "/sub"
-	SharePath       = "/share"
-	PublicPath      = "/more"
-	FilesPath       = "/files"
 	SubInfoPath     = substore.SubInfoPath
 	HeaderFromCheck = "X-From-Subs-Check-pro"
 	QueryFromCheck  = "from_subs_check_pro"
@@ -65,13 +56,6 @@ func (app *App) initHTTPServer() error {
 	router.Use(gin.Recovery())
 	router.Use(app.silentLoggerMiddleware())
 
-	// 加载模板（share/files 页面依赖）
-	router.SetHTMLTemplate(template.Must(template.New("").ParseFS(webui.TemplatesFS, TemplatePattern)))
-
-	// 注册静态资源，share/files 页面依赖它们
-	staticSub, _ := fs.Sub(webui.StaticFS, "static")
-	router.StaticFS(StaticPrefix, http.FS(staticSub))
-
 	saver, err := method.NewLocalSaver()
 	if err != nil {
 		return fmt.Errorf("获取http监听目录失败: %w", err)
@@ -80,10 +64,6 @@ func (app *App) initHTTPServer() error {
 	app.registerStaticRoutes(router, saver.OutputPath)
 	// 注册订阅流量信息路由
 	app.registerSubscriptionInfoRoute(router)
-
-	if err := app.registerShareRoutes(router, saver.OutputPath); err != nil {
-		slog.Error("注册分享路由失败", "error", err)
-	}
 
 	listenAddr := normalizeListenAddr(config.GlobalConfig.ListenPort)
 	srv := &http.Server{
@@ -141,35 +121,6 @@ func (app *App) registerStaticRoutes(router *gin.Engine, outputPath string) {
 		// 同时提供 /sub 路径访问
 		router.StaticFile(SubPath+routePath, filepath.Join(subDir, fileName))
 	}
-}
-
-// registerShareRoutes 注册分享路由
-func (app *App) registerShareRoutes(router *gin.Engine, outputPath string) error {
-	publicShareDir := outputPath
-	encryptedShareDir := filepath.Join(outputPath, "sub") // 加密分享
-
-	// 1. 加密分享路由 (/sub/...)
-	// 匹配 /sub/分享码/文件名
-	router.GET(SubPath+"/:code/*filepath", app.handleEncryptedShare(encryptedShareDir))
-	// 匹配 /sub 和 /sub/（处理未输入分享码的情况）
-	router.GET(SubPath, app.handleEncryptedShare(encryptedShareDir))
-	router.GET(SubPath+"/", app.handleEncryptedShare(encryptedShareDir))
-	router.GET(SharePath, app.handleEncryptedShare(encryptedShareDir))
-	router.GET(SharePath+"/", app.handleEncryptedShare(encryptedShareDir))
-
-	// 2. 公开分享路由 (/more/...)
-	moreDirPath := filepath.Join(publicShareDir, ShareDirName)
-	if _, err := os.Stat(moreDirPath); os.IsNotExist(err) {
-		if err := os.MkdirAll(moreDirPath, 0o755); err != nil {
-			return err
-		}
-	}
-	router.GET(PublicPath+"/*filepath", app.handleFileShare(moreDirPath, false))
-
-	// 分享索引页：展示所有分享入口
-	router.GET(FilesPath, app.handleFilesIndex)
-
-	return nil
 }
 
 // checkPortFree 在启动服务前检测端口是否可用。
