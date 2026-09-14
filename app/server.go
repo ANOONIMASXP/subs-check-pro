@@ -531,6 +531,7 @@ func (app *App) getStatus(c *gin.Context) {
 			"duration":  app.lastCheck.duration.Load(),
 			"total":     app.lastCheck.Total.Load(),
 			"available": app.lastCheck.available.Load(),
+			"traffic":   app.lastCheck.traffic.Load(),
 		}
 	}
 
