@@ -17,14 +17,11 @@ import (
 	"github.com/sinspired/subs-check-pro/v3/check"
 	"github.com/sinspired/subs-check-pro/v3/config"
 	"github.com/sinspired/subs-check-pro/v3/save/method"
-	"github.com/sinspired/subs-check-pro/v3/substore"
 )
 
 const (
 	DefaultPort     = ":8199"
-	LogTimeFormat   = "2006-01-02 15:04:05"
 	SubPath         = "/sub"
-	SubInfoPath     = substore.SubInfoPath
 	HeaderFromCheck = "X-From-Subs-Check-pro"
 	QueryFromCheck  = "from_subs_check_pro"
 )
@@ -62,8 +59,6 @@ func (app *App) initHTTPServer() error {
 	}
 
 	app.registerStaticRoutes(router, saver.OutputPath)
-	// 注册订阅流量信息路由
-	app.registerSubscriptionInfoRoute(router)
 
 	listenAddr := normalizeListenAddr(config.GlobalConfig.ListenPort)
 	srv := &http.Server{

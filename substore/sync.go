@@ -35,13 +35,11 @@ type sub struct {
 	Content               string   `json:"content"`
 	UA                    string   `json:"ua"`
 	Tag                   []string `json:"tag,omitempty"`
-	SubUserInfo           string   `json:"subUserinfo,omitempty"`
 }
 
 // 常量
 const (
-	SubName     = "sub"
-	SubInfoPath = "/sub-info"
+	SubName = "sub"
 
 	// scpIDPrefix 标识本程序历史注入的操作（仅用于同步时识别并清理）
 	scpIDPrefix = "SCP."
@@ -51,10 +49,7 @@ const (
 var subStoreMu sync.Mutex
 
 // 全局运行时变量
-var (
-	BaseURL        string // 基础api地址
-	SubUserInfoURL string // SubUserInfoURL 订阅流量信息 URL
-)
+var BaseURL string // 基础api地址
 
 // 操作识别工具
 
@@ -78,7 +73,6 @@ func newDefaultSub(data []byte) sub {
 		DisplayNameAlt: SubName,
 		Remark:         "默认订阅 (无分流规则)",
 		Tag:            []string{"Subs-Check-Pro", "已检测"},
-		SubUserInfo:    SubUserInfoURL,
 		Source:         "local",
 		Content:        string(data),
 		Process:        []any{},
@@ -199,14 +193,12 @@ func syncSub(s sub) error {
 	}
 
 	patch := struct {
-		Icon        string `json:"icon,omitempty"`
-		Content     string `json:"content,omitempty"`
-		SubUserInfo string `json:"subUserinfo,omitempty"`
-		Process     []any  `json:"process,omitempty"`
+		Icon    string `json:"icon,omitempty"`
+		Content string `json:"content,omitempty"`
+		Process []any  `json:"process,omitempty"`
 	}{
-		Icon:        s.Icon,
-		Content:     s.Content,
-		SubUserInfo: s.SubUserInfo,
+		Icon:    s.Icon,
+		Content: s.Content,
 	}
 
 	// 清理历史版本注入的 SCP 操作，保留用户自定义操作
@@ -252,14 +244,6 @@ func SyncSubStore(yamlData []byte) {
 	if os.Getenv("SUB_CHECK_SKIP") != "" && config.GlobalConfig.SubStorePort != "" {
 		time.Sleep(time.Second * 1)
 	}
-
-	// 构建订阅流量信息 URL
-	listenPort := strings.TrimSpace(config.GlobalConfig.ListenPort)
-	if listenPort == "" {
-		listenPort = "8199"
-	}
-	listenPort = strings.TrimPrefix(listenPort, ":")
-	SubUserInfoURL = fmt.Sprintf("http://127.0.0.1:%s%s#noCache", listenPort, SubInfoPath)
 
 	config.GlobalConfig.SubStorePort = formatPort(config.GlobalConfig.SubStorePort)
 	BaseURL = fmt.Sprintf("http://127.0.0.1%s", config.GlobalConfig.SubStorePort)
