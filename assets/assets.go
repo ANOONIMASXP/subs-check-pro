@@ -9,3 +9,6 @@ var EmbeddedSubStoreBackendVer []byte
 
 //go:embed sub-store.min.js
 var EmbeddedSubStore []byte
+
+//go:embed geolite2.version
+var EmbeddedGeoLite2Version []byte

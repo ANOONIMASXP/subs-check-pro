@@ -4,4 +4,4 @@ go build -trimpath -ldflags "-s -w"
 .\go_build.ps1 -Android -Version 26.9.14
 
 # 只编译、不打包
-.\go_build.ps1 -Android -Debug -Version 26.9.14
+.\go_build.ps1 -Android -Debug 

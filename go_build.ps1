@@ -131,10 +131,20 @@ elseif ($Debug) {
 # --- 4. 开始编译 ---
 Write-Host "🚀 开始交叉编译 Go 应用程序..." -ForegroundColor Cyan
 
-if ($Version -ne "") {
-    Write-Host "🎫 指定编译版本：$Version"
+# 未通过参数指定版本时，从 init.go 读取 Version
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $initFile = Join-Path $PSScriptRoot "init.go"
+    if (Test-Path $initFile) {
+        $m = Select-String -Path $initFile -Pattern '^\s*var\s+Version\s*=\s*"([^"]*)"' | Select-Object -First 1
+        if ($m) {
+            $Version = $m.Matches[0].Groups[1].Value
+            Write-Host "🎫 从 init.go 读取版本：$Version" -ForegroundColor Cyan
+        }
+    }
 }
-else {
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = "dev"
     Write-Host "🎫 未指定版本，默认为：dev"
 }
 

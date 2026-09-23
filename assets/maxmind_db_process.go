@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/oschwald/maxminddb-golang/v2"
@@ -24,11 +26,9 @@ func OpenMaxMindDB(dbPath string) (*maxminddb.Reader, error) {
 		return nil, err
 	}
 
-	// 如果数据库不存在，先解压生成
-	if _, err := os.Stat(mmdbPath); os.IsNotExist(err) {
-		if err := decompressEmbeddedMMDB(mmdbPath); err != nil {
-			return nil, err
-		}
+	// 确保磁盘数据库与内嵌版本一致（内嵌更新则覆盖，缺失则解压）
+	if err := ensureGeoLite2(mmdbPath); err != nil {
+		return nil, err
 	}
 
 	return openDBWithArch(mmdbPath)
@@ -46,6 +46,50 @@ func openDBWithArch(path string) (*maxminddb.Reader, error) {
 	return db, nil
 }
 
+// ensureGeoLite2 确保磁盘上的 GeoLite2 数据库与内嵌版本一致：
+// 内嵌版本更新（或本地无版本号/数据库文件缺失）时，重新解压覆盖。
+func ensureGeoLite2(mmdbPath string) error {
+	verPath := filepath.Join(filepath.Dir(mmdbPath), "geolite2.version")
+
+	embeddedVer := strings.TrimSpace(string(EmbeddedGeoLite2Version))
+	localVer := ""
+	if b, err := os.ReadFile(verPath); err == nil {
+		localVer = strings.TrimSpace(string(b))
+	}
+
+	// 内嵌版本更新则覆盖；否则仅在数据库文件缺失时解压
+	if !geoLite2VersionNewer(embeddedVer, localVer) {
+		if _, err := os.Stat(mmdbPath); err == nil {
+			return nil
+		}
+	}
+
+	if err := decompressEmbeddedMMDB(mmdbPath); err != nil {
+		return err
+	}
+
+	if embeddedVer != "" {
+		if err := os.WriteFile(verPath, []byte(embeddedVer), 0o644); err != nil {
+			slog.Warn("写入 GeoLite2 版本号失败", "error", err)
+		} else {
+			slog.Info("GeoLite2 数据库已更新", "version", embeddedVer, "path", mmdbPath)
+		}
+	}
+	return nil
+}
+
+// geoLite2VersionNewer 判断内嵌版本是否比本地新。
+// 版本形如 YYYY.MM.DD，零填充，字典序即为时间序。
+func geoLite2VersionNewer(embedded, local string) bool {
+	if embedded == "" {
+		return false
+	}
+	if local == "" {
+		return true
+	}
+	return strings.Compare(embedded, local) > 0
+}
+
 // 解压内置的 MaxMind 数据库到指定路径
 func decompressEmbeddedMMDB(targetPath string) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
@@ -58,7 +102,7 @@ func decompressEmbeddedMMDB(targetPath string) error {
 	}
 	defer zstdDecoder.Close()
 
-	file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("maxmind数据库文件创建失败: %w", err)
 	}
