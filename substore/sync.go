@@ -193,12 +193,14 @@ func syncSub(s sub) error {
 	}
 
 	patch := struct {
-		Icon    string `json:"icon,omitempty"`
-		Content string `json:"content,omitempty"`
-		Process []any  `json:"process,omitempty"`
+		Icon        string `json:"icon,omitempty"`
+		Content     string `json:"content,omitempty"`
+		SubUserInfo string `json:"subUserinfo"`
+		Process     []any  `json:"process,omitempty"`
 	}{
-		Icon:    s.Icon,
-		Content: s.Content,
+		Icon:        s.Icon,
+		Content:     s.Content,
+		SubUserInfo: "", // 显式清空历史遗留的订阅流量信息 URL，避免继续请求 /sub-info
 	}
 
 	// 清理历史版本注入的 SCP 操作，保留用户自定义操作

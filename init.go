@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	_ "net/http/pprof"
@@ -19,7 +20,7 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-var Version = "26.9.14"
+var Version = "26.9.16"
 
 func init() {
 	// 设置依赖库日志级别
@@ -47,7 +48,7 @@ func init() {
 
 	// 创建两个单独的handler
 	// 1. 终端输出 - 带颜色
-	consoleHandler := tint.NewTextHandler(getStdout(), &tint.Options{
+	consoleHandler := tint.NewTextHandler(&lineClearWriter{w: getStdout()}, &tint.Options{
 		Level:      logLevel,
 		TimeFormat: "01-02 15:04:05",
 	})
@@ -109,6 +110,25 @@ func getLogLevel() slog.Level {
 	default:
 		return slog.LevelInfo // 默认 INFO 级别
 	}
+}
+
+// lineClearWriter 在每次写入日志前先回车并清除当前行，
+// 避免日志与进度条输出混在同一行（保证日志从行首开始）。
+type lineClearWriter struct {
+	w io.Writer
+}
+
+func (lw *lineClearWriter) Write(p []byte) (int, error) {
+	prefix := []byte("\r\x1b[K")
+	buf := make([]byte, 0, len(prefix)+len(p))
+	buf = append(buf, prefix...)
+	buf = append(buf, p...)
+
+	n, err := lw.w.Write(buf)
+	if n <= len(prefix) {
+		return 0, err
+	}
+	return n - len(prefix), err
 }
 
 // 多输出处理器 - 简化版本

@@ -452,7 +452,7 @@ func renderProgressString() string {
 	padding := max(barWidth-len(bar), 0)
 	bar += strings.Repeat(" ", padding)
 
-	return "\r" + step +
+	return "\r\x1b[K" + step +
 		": [" + bar + "] " +
 		strconv.FormatFloat(percent, 'f', 1, 64) + "% " +
 		"(" + strconv.Itoa(currentChecked) + "/" + strconv.Itoa(total) + ") " +
