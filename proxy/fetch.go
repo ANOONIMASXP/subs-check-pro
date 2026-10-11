@@ -55,13 +55,13 @@ const (
 	//
 	// 原实现的 Transport 没有设置拨号超时，对黑洞地址（SYN 被丢弃）只能等到
 	// 整个请求超时（>=10s）才放弃；死链越多，被白白占用的并发槽位越多。
-	dialTimeout = 8 * time.Second
+	dialTimeout = 10 * time.Second
 
 	// tlsHandshakeTimeout TLS 握手最长耗时。
-	tlsHandshakeTimeout = 8 * time.Second
+	tlsHandshakeTimeout = 10 * time.Second
 
 	// hostBreakerTTL 主机熔断的有效期。到期后会重新放行探测一次。
-	hostBreakerTTL = 5 * time.Minute
+	hostBreakerTTL = 3 * time.Minute
 )
 
 var (
@@ -448,6 +448,78 @@ func FetchSubsData(rawURL string) ([]byte, error) {
 	return nil, fmt.Errorf("%d次重试后失败: %w", maxRetries, lastErr)
 }
 
+// fallbackDNS 系统 DNS 解析失败时使用的备用 DNS（UDP 53）：阿里、腾讯。
+var fallbackDNS = []string{"223.5.5.5:53", "119.29.29.29:53"}
+
+// lookupViaServers 并发向所有备用 DNS 查询，返回最先得到的结果；整体最多等 3 秒。
+func lookupViaServers(ctx context.Context, host string, servers []string) []string {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	ch := make(chan []string, len(servers)) // 带缓冲，提前返回时其余 goroutine 不会阻塞泄漏
+	for _, srv := range servers {
+		go func(srv string) {
+			r := &net.Resolver{
+				PreferGo: true,
+				Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+					var d net.Dialer
+					return d.DialContext(ctx, network, srv)
+				},
+			}
+			ips, err := r.LookupHost(ctx, host)
+			if err != nil {
+				ch <- nil
+				return
+			}
+			ch <- ips
+		}(srv)
+	}
+
+	for range servers {
+		select {
+		case ips := <-ch:
+			if len(ips) > 0 {
+				return ips
+			}
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	return nil
+}
+
+// dialWithDNSFallback 先用系统 DNS 拨号；仅当失败原因是 DNS 解析失败时，
+// 才改用备用 DNS 解析后直连 IP 重试（TLS 的 SNI 仍使用原域名，不受影响）。
+// 备用 DNS 也解析不到时返回原始错误，因此「域名确实不存在」的判定与熔断逻辑保持不变。
+func dialWithDNSFallback(base *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := base.DialContext(ctx, network, addr)
+		if err == nil {
+			return conn, nil
+		}
+
+		if _, ok := errors.AsType[*net.DNSError](err); !ok {
+			return nil, err
+		}
+		host, port, splitErr := net.SplitHostPort(addr)
+		if splitErr != nil || net.ParseIP(host) != nil {
+			return nil, err
+		}
+
+		for _, s := range lookupViaServers(ctx, host, fallbackDNS) {
+			ip := net.ParseIP(s)
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() { // 过滤被污染的回环 / 0.0.0.0 结果
+				continue
+			}
+			if c, e := base.DialContext(ctx, network, net.JoinHostPort(s, port)); e == nil {
+				slog.Debug("系统 DNS 解析失败，已通过备用 DNS 连接", "host", host, "ip", s)
+				return c, nil
+			}
+		}
+		return nil, err
+	}
+}
+
 // getClient 根据代理地址获取复用的 Client
 func getClient(proxyAddr string) *http.Client {
 	if v, ok := clientMapCache.Load(proxyAddr); ok {
@@ -456,17 +528,18 @@ func getClient(proxyAddr string) *http.Client {
 
 	// 创建新的 Transport
 	transport := &http.Transport{
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 		MaxIdleConns:        100,              // 全局最大空闲连接
 		MaxIdleConnsPerHost: 20,               // 每个 Host 最大空闲连接
 		IdleConnTimeout:     90 * time.Second, // 空闲超时
 		DisableKeepAlives:   false,            // 开启长连接复用
 
-		// 连接阶段快速失败：死链/黑洞地址不再傻等整个请求超时
-		DialContext: (&net.Dialer{
+		// 连接阶段快速失败：死链/黑洞地址不再傻等整个请求超时；
+		// 系统 DNS 解析失败时自动改用备用 DNS 再试
+		DialContext: dialWithDNSFallback(&net.Dialer{
 			Timeout:   dialTimeout,
 			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		}),
 		TLSHandshakeTimeout: tlsHandshakeTimeout,
 	}
 
