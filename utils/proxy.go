@@ -195,9 +195,19 @@ type FindBestGhProxyResult struct {
 }
 
 // FindBestGhProxy 从单一配置和组配置中检测并找出最佳的 GitHub 代理
-func FindBestGhProxy() FindBestGhProxyResult {
-	ghProxy := config.GlobalConfig.GithubProxy
-	GhProxyGroup := config.GlobalConfig.GithubProxyGroup
+// 增加 manualProxy 参数：如果前端传了值，就只测这一个
+func FindBestGhProxy(manualProxy string) FindBestGhProxyResult {
+	var ghProxy string
+	var GhProxyGroup []string
+
+	if manualProxy != "" {
+		ghProxy = manualProxy
+		// 如果指定了代理，强制清空组，不去测组
+		GhProxyGroup = nil
+	} else {
+		ghProxy = config.GlobalConfig.GithubProxy
+		GhProxyGroup = config.GlobalConfig.GithubProxyGroup
+	}
 
 	if ghProxy == "" && len(GhProxyGroup) == 0 {
 		return FindBestGhProxyResult{Error: "未配置 GitHub 代理"}
@@ -211,10 +221,14 @@ func FindBestGhProxy() FindBestGhProxyResult {
 			return FindBestGhProxyResult{
 				OK:        true,
 				ProxyUsed: normalized,
-				LatencyMS: cost.Milliseconds(), // 顺手记录延迟供前端 API 使用
+				LatencyMS: cost.Milliseconds(),
 				SpeedKBps: speed,
-				FromGroup: false, // 标记为非代理组
+				FromGroup: false,
 			}
+		}
+		// 如果是前端手动指定的值，测失败了就直接返回错误，不往后走（不测组）
+		if manualProxy != "" {
+			return FindBestGhProxyResult{Error: "指定的 GitHub 代理检测失败"}
 		}
 	}
 
@@ -286,7 +300,8 @@ func GetGhProxy() bool {
 		return false
 	}
 
-	result := FindBestGhProxy()
+	// 系统自动调用时，不传指定参数
+	result := FindBestGhProxy("")
 
 	if result.OK {
 		config.GlobalConfig.GithubProxy = result.ProxyUsed
@@ -340,7 +355,7 @@ func checkGhProxyAvailable(githubProxy string) (bool, string, float64) {
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
-			Proxy: nil,
+			Proxy:           nil,
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 		},
 	}

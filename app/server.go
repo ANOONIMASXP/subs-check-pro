@@ -952,6 +952,13 @@ func (app *App) clearLogsHandler(c *gin.Context) {
 // checkGhProxyHandler 检测 GitHub 代理是否可用，并返回最佳代理
 // POST /api/proxy/check-github
 func (app *App) checkGhProxyHandler(c *gin.Context) {
-	result := utils.FindBestGhProxy()
+	var req struct {
+		Proxy string `json:"proxy"`
+	}
+	// 解析前端发来的指定代理地址（如果有）
+	_ = c.ShouldBindJSON(&req)
+
+	// 把前端传来的值传给检测函数
+	result := utils.FindBestGhProxy(strings.TrimSpace(req.Proxy))
 	c.JSON(http.StatusOK, result)
 }
