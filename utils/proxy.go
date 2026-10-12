@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -183,24 +184,37 @@ func UnsetAllProxyEnvVars() {
 	}
 }
 
-// GetGhProxy 检测 github 代理是否可用，并设置可用的 github 代理
-func GetGhProxy() bool {
-	GhProxy := config.GlobalConfig.GithubProxy
+// FindBestGhProxyResult 查找最佳 GhProxy 的结果结构体
+type FindBestGhProxyResult struct {
+	OK        bool    `json:"ok"`
+	ProxyUsed string  `json:"proxy_used,omitempty"`
+	LatencyMS int64   `json:"latency_ms,omitempty"`
+	SpeedKBps float64 `json:"speed_kbps,omitempty"`
+	Error     string  `json:"error,omitempty"`
+	FromGroup bool    `json:"-"` // 用于标记是否来自代理组，严格保持原有的日志打印逻辑
+}
+
+// FindBestGhProxy 从单一配置和组配置中检测并找出最佳的 GitHub 代理
+func FindBestGhProxy() FindBestGhProxyResult {
+	ghProxy := config.GlobalConfig.GithubProxy
 	GhProxyGroup := config.GlobalConfig.GithubProxyGroup
 
-	if GhProxy == "" && GhProxyGroup == nil {
-		slog.Debug("未配置 githubproxy，将不使用 githubproxy")
-		IsGhProxyAvailable = false
-		return false
+	if ghProxy == "" && len(GhProxyGroup) == 0 {
+		return FindBestGhProxyResult{Error: "未配置 GitHub 代理"}
 	}
 
 	// 先检测单个 GhProxy
-	if GhProxy != "" {
-		if ok, normalized, _ := checkGhProxyAvailable(GhProxy); ok {
-			config.GlobalConfig.GithubProxy = normalized
-			slog.Debug("GitHub代理", "normalized", normalized)
-			IsGhProxyAvailable = true
-			return true
+	if ghProxy != "" {
+		start := time.Now()
+		if ok, normalized, speed := checkGhProxyAvailable(ghProxy); ok {
+			cost := time.Since(start)
+			return FindBestGhProxyResult{
+				OK:        true,
+				ProxyUsed: normalized,
+				LatencyMS: cost.Milliseconds(), // 顺手记录延迟供前端 API 使用
+				SpeedKBps: speed,
+				FromGroup: false, // 标记为非代理组
+			}
 		}
 	}
 
@@ -251,22 +265,53 @@ func GetGhProxy() bool {
 		}
 
 		if best.ok {
-			config.GlobalConfig.GithubProxy = best.proxy
-			if best.cost.Milliseconds() < 1000 {
-				slog.Info("最佳GitHub代理", "URL", best.proxy,
-					"耗时", strconv.FormatInt(best.cost.Milliseconds(), 10)+"ms",
-					"速度", strconv.FormatFloat(best.speedKBps, 'f', 1, 64)+"KB/s",
+			return FindBestGhProxyResult{
+				OK:        true,
+				ProxyUsed: best.proxy,
+				LatencyMS: best.cost.Milliseconds(),
+				SpeedKBps: best.speedKBps,
+				FromGroup: true, // 标记为来自代理组
+			}
+		}
+	}
+
+	return FindBestGhProxyResult{Error: "所有配置的 GitHub 代理均不可用"}
+}
+
+// GetGhProxy 检测 github 代理是否可用，并设置可用的 github 代理
+func GetGhProxy() bool {
+	if config.GlobalConfig.GithubProxy == "" && len(config.GlobalConfig.GithubProxyGroup) == 0 {
+		slog.Debug("未配置 githubproxy，将不使用 githubproxy")
+		IsGhProxyAvailable = false
+		return false
+	}
+
+	result := FindBestGhProxy()
+
+	if result.OK {
+		config.GlobalConfig.GithubProxy = result.ProxyUsed
+
+		// 完美还原原来的日志打印逻辑和 strconv 格式化
+		if result.FromGroup {
+			cost := time.Duration(result.LatencyMS) * time.Millisecond
+			if cost.Milliseconds() < 1000 {
+				slog.Info("最佳GitHub代理", "URL", result.ProxyUsed,
+					"耗时", strconv.FormatInt(cost.Milliseconds(), 10)+"ms",
+					"速度", strconv.FormatFloat(result.SpeedKBps, 'f', 1, 64)+"KB/s",
 				)
 			} else {
-				slog.Info("最佳GitHub代理", "URL", best.proxy,
-					"耗时", strconv.FormatFloat(best.cost.Seconds(), 'f', 2, 64)+"s",
-					"速度", strconv.FormatFloat(best.speedKBps, 'f', 1, 64)+"KB/s",
+				slog.Info("最佳GitHub代理", "URL", result.ProxyUsed,
+					"耗时", strconv.FormatFloat(cost.Seconds(), 'f', 2, 64)+"s",
+					"速度", strconv.FormatFloat(result.SpeedKBps, 'f', 1, 64)+"KB/s",
 				)
 			}
-
-			IsGhProxyAvailable = true
-			return true
+		} else {
+			// 单个代理测速成功只打印 Debug
+			slog.Debug("GitHub代理", "normalized", result.ProxyUsed)
 		}
+
+		IsGhProxyAvailable = true
+		return true
 	}
 
 	slog.Debug("未找到可用的 GitHubProxy，将不使用 GitHubProxy")
@@ -296,6 +341,7 @@ func checkGhProxyAvailable(githubProxy string) (bool, string, float64) {
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
 			Proxy: nil,
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 		},
 	}
 
@@ -358,6 +404,9 @@ func isSysProxyAvailable(ctx context.Context, proxy string) bool {
 
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(proxyURL),
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true, // 忽略 TLS 证书校验
+		},
 	}
 	client := &http.Client{
 		Transport: transport,
