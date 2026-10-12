@@ -312,11 +312,8 @@ func Check() ([]Result, []map[string]any, error) {
 	// 获取动态映射的 CIDR 和 域名层级 文本
 	cidr, domainLevel := proxyutils.ThresholdToLevel(cfg.Threshold)
 
-	headSize := 0
-	if lastResultLength < 10 {
-		// 设置之前成功的节点顺序在前
-		headSize = lastResultLength
-	}
+	// 设置之前成功的节点顺序在前
+	headSize := lastResultLength
 
 	if len(proxies) > headSize && headSize > 0 {
 		tail := proxies[headSize:]
