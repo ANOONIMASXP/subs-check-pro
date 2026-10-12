@@ -194,17 +194,43 @@ type FindBestGhProxyResult struct {
 	FromGroup bool    `json:"-"` // 用于标记是否来自代理组，严格保持原有的日志打印逻辑
 }
 
+// uniqueStrings 字符串切片去重过滤空值
+func uniqueStrings(input []string) []string {
+	u := make([]string, 0, len(input))
+	m := make(map[string]bool)
+	for _, val := range input {
+		val = strings.TrimSpace(val)
+		if val != "" && !m[val] {
+			m[val] = true
+			u = append(u, val)
+		}
+	}
+	return u
+}
+
 // FindBestGhProxy 从单一配置和组配置中检测并找出最佳的 GitHub 代理
-// 增加 manualProxy 参数：如果前端传了值，就只测这一个
-func FindBestGhProxy(manualProxy string) FindBestGhProxyResult {
+// isManual: 标识是否为前端 WebUI 手动触发
+func FindBestGhProxy(manualProxy string, isManual bool) FindBestGhProxyResult {
 	var ghProxy string
 	var GhProxyGroup []string
 
-	if manualProxy != "" {
-		ghProxy = manualProxy
-		// 如果指定了代理，强制清空组，不去测组
-		GhProxyGroup = nil
+	if isManual {
+		if manualProxy != "" {
+			// 场景 A: 前端输入框有明确的值，只测这一个
+			ghProxy = manualProxy
+			GhProxyGroup = nil
+		} else {
+			// 场景 B: 前端输入框被清空，说明用户对当前保存的值不满意
+			// 强制跳过单测，把原来保存的值放进组里，和组内代理一起并发赛跑！
+			ghProxy = ""
+			GhProxyGroup = append([]string{}, config.GlobalConfig.GithubProxyGroup...)
+			if config.GlobalConfig.GithubProxy != "" {
+				GhProxyGroup = append(GhProxyGroup, config.GlobalConfig.GithubProxy)
+			}
+			GhProxyGroup = uniqueStrings(GhProxyGroup) // 去重
+		}
 	} else {
+		// 场景 C: 后端定时或自动发起的常规检测
 		ghProxy = config.GlobalConfig.GithubProxy
 		GhProxyGroup = config.GlobalConfig.GithubProxyGroup
 	}
@@ -213,7 +239,7 @@ func FindBestGhProxy(manualProxy string) FindBestGhProxyResult {
 		return FindBestGhProxyResult{Error: "未配置 GitHub 代理"}
 	}
 
-	// 先检测单个 GhProxy
+	// 1. 如果有单独的代理需要测（场景 A 和 C 都会走到这）
 	if ghProxy != "" {
 		start := time.Now()
 		if ok, normalized, speed := checkGhProxyAvailable(ghProxy); ok {
@@ -226,13 +252,13 @@ func FindBestGhProxy(manualProxy string) FindBestGhProxyResult {
 				FromGroup: false,
 			}
 		}
-		// 如果是前端手动指定的值，测失败了就直接返回错误，不往后走（不测组）
-		if manualProxy != "" {
+		// 如果是前端手动指定的值（场景 A），一旦失败直接返回，不再测组
+		if isManual && manualProxy != "" {
 			return FindBestGhProxyResult{Error: "指定的 GitHub 代理检测失败"}
 		}
 	}
 
-	// 并发检测 GhProxyGroup
+	// 2. 并发检测组内代理（场景 B 和 场景 C 失败后会走到这）
 	if len(GhProxyGroup) > 0 {
 		slog.Debug("开始并发检测 GhProxyGroup 内的代理")
 
@@ -300,13 +326,12 @@ func GetGhProxy() bool {
 		return false
 	}
 
-	// 系统自动调用时，不传指定参数
-	result := FindBestGhProxy("")
+	// 后端自动调用时，isManual 传 false，走常规逻辑
+	result := FindBestGhProxy("", false)
 
 	if result.OK {
 		config.GlobalConfig.GithubProxy = result.ProxyUsed
 
-		// 完美还原原来的日志打印逻辑和 strconv 格式化
 		if result.FromGroup {
 			cost := time.Duration(result.LatencyMS) * time.Millisecond
 			if cost.Milliseconds() < 1000 {
@@ -321,7 +346,6 @@ func GetGhProxy() bool {
 				)
 			}
 		} else {
-			// 单个代理测速成功只打印 Debug
 			slog.Debug("GitHub代理", "normalized", result.ProxyUsed)
 		}
 

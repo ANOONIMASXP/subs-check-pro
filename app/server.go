@@ -955,10 +955,9 @@ func (app *App) checkGhProxyHandler(c *gin.Context) {
 	var req struct {
 		Proxy string `json:"proxy"`
 	}
-	// 解析前端发来的指定代理地址（如果有）
 	_ = c.ShouldBindJSON(&req)
 
-	// 把前端传来的值传给检测函数
-	result := utils.FindBestGhProxy(strings.TrimSpace(req.Proxy))
+	// 第二个参数传 true，代表这是来自前端 WebUI 的手动触发检测
+	result := utils.FindBestGhProxy(strings.TrimSpace(req.Proxy), true)
 	c.JSON(http.StatusOK, result)
 }
