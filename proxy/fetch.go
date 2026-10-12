@@ -693,7 +693,7 @@ func fetchOnce(target string, useProxy bool, timeoutSec int, ua string) ([]byte,
 func readSubscriptionBody(resp *http.Response) ([]byte, *fetchFailure) {
 	maxBytes := currentMaxSubscriptionBytes()
 
-	// 如果 Content-Length 存在且超过限制，直接报错，避免无谓的读取
+	// 1. 如果 Content-Length 存在且超过限制，直接报错，避免无谓的读取
 	if resp.ContentLength > maxBytes {
 		return nil, &fetchFailure{
 			err: fmt.Errorf(
@@ -707,16 +707,20 @@ func readSubscriptionBody(resp *http.Response) ([]byte, *fetchFailure) {
 		}
 	}
 
+	// 用于标记是否已经打印过体积警告，避免 Content-Length 触发一次，读完后又触发一次
+	warnedSize := false
 	if resp.ContentLength >= warnLimitSize {
 		slog.Warn(
 			"订阅文件较大",
+			"URL", resp.Request.URL,
 			"size_mb", fmt.Sprintf("%.1f", float64(resp.ContentLength)/(1<<20)),
 			"warn_mb", warnLimitSize>>20,
 			"limit_mb", maxBytes>>20,
 		)
+		warnedSize = true
 	}
 
-	// 1. 头部嗅探
+	// 2. 头部嗅探
 	head := make([]byte, sniffBytes)
 	n, err := io.ReadFull(resp.Body, head)
 	head = head[:n]
@@ -731,12 +735,12 @@ func readSubscriptionBody(resp *http.Response) ([]byte, *fetchFailure) {
 		return nil, &fetchFailure{err: errEmptySubscription, class: failPermanent}
 	}
 
+	// 极端情况：如果限制大小比 sniffBytes 还小，在此处触发超限
 	if int64(n) > maxBytes {
 		return nil, &fetchFailure{
 			err: fmt.Errorf(
-				"%w: %.1f MB（限制 %d MB）",
+				"%w: 大小超出限制（限制 %d MB）",
 				errTooLarge,
-				float64(n)/(1<<20),
 				maxBytes>>20,
 			),
 			class: failPermanent,
@@ -749,7 +753,7 @@ func readSubscriptionBody(resp *http.Response) ([]byte, *fetchFailure) {
 		return head, nil
 	}
 
-	// 2. 读取剩余部分
+	// 3. 读取剩余部分
 	capHint := 64 << 10
 	if cl := resp.ContentLength; cl > 0 {
 		// 额外留出 bytes.MinRead：Buffer.ReadFrom 每轮都要求至少 MinRead 的空闲空间，
@@ -769,11 +773,12 @@ func readSubscriptionBody(resp *http.Response) ([]byte, *fetchFailure) {
 
 	size := int64(buf.Len())
 	if size > maxBytes {
+		// 此时我们只知道文件大小 > maxBytes，但不知道实际大小，因为读取被截断了。
 		return nil, &fetchFailure{
 			err: fmt.Errorf(
-				"%w: %.1f MB（限制 %d MB）",
+				"%w: > %.1f MB（限制 %d MB）", // 提示 "> 50.0 MB" 而不是 "50.0 MB"
 				errTooLarge,
-				float64(size)/(1<<20),
+				float64(maxBytes)/(1<<20),
 				maxBytes>>20,
 			),
 			class: failPermanent,
@@ -781,9 +786,11 @@ func readSubscriptionBody(resp *http.Response) ([]byte, *fetchFailure) {
 		}
 	}
 
-	if size >= warnLimitSize {
+	// 如果之前因为没有 Content-Length 没触发警告，读完后发现文件很大，这里补报
+	if !warnedSize && size >= warnLimitSize {
 		slog.Warn(
 			"订阅文件较大",
+			"URL", resp.Request.URL,
 			"size_mb", fmt.Sprintf("%.1f", float64(size)/(1<<20)),
 			"warn_mb", warnLimitSize>>20,
 			"limit_mb", maxBytes>>20,
