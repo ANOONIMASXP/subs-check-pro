@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,7 +10,7 @@ import (
 	"github.com/goccy/go-json"
 )
 
-func CheckDisney(httpClient *http.Client) (bool, error) {
+func CheckDisney(ctx context.Context, httpClient *http.Client) (bool, error) {
 	// 定义常量
 	const (
 		cookie    = "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&latitude=0&longitude=0&platform=browser&subject_token=DISNEYASSERTION&subject_token_type=urn%3Abamtech%3Aparams%3Aoauth%3Atoken-type%3Adevice"
@@ -19,7 +20,7 @@ func CheckDisney(httpClient *http.Client) (bool, error) {
 	)
 
 	// 第一步：获取 assertion token
-	req, err := http.NewRequest("POST", "https://disney.api.edge.bamgrid.com/devices", strings.NewReader(assertion))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://disney.api.edge.bamgrid.com/devices", strings.NewReader(assertion))
 	if err != nil {
 		return false, err
 	}
@@ -55,7 +56,7 @@ func CheckDisney(httpClient *http.Client) (bool, error) {
 
 	// 第二步：获取 access token
 	tokenData := strings.Replace(cookie, "DISNEYASSERTION", assertionToken, 1)
-	req, err = http.NewRequest("POST", "https://disney.api.edge.bamgrid.com/token", strings.NewReader(tokenData))
+	req, err = http.NewRequestWithContext(ctx, "POST", "https://disney.api.edge.bamgrid.com/token", strings.NewReader(tokenData))
 	if err != nil {
 		return false, err
 	}
@@ -95,7 +96,7 @@ func CheckDisney(httpClient *http.Client) (bool, error) {
 	// 第三步：检查区域
 	gqlQuery := `{"query":"mutation refreshToken($input: RefreshTokenInput!) {refreshToken(refreshToken: $input) {activeSession {sessionId}}}","variables":{"input":{"refreshToken":"` + refreshToken + `"}}}`
 
-	req, err = http.NewRequest("POST", "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql", strings.NewReader(gqlQuery))
+	req, err = http.NewRequestWithContext(ctx, "POST", "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql", strings.NewReader(gqlQuery))
 	if err != nil {
 		return false, err
 	}

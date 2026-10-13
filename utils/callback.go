@@ -14,7 +14,7 @@ import (
 
 // ExecuteCallback 执行回调脚本
 func ExecuteCallback(successCount int) {
-	callbackScript := config.GlobalConfig.CallbackScript
+	callbackScript := config.Get().CallbackScript
 	if callbackScript == "" {
 		return
 	}

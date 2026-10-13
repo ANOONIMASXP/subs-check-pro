@@ -3,89 +3,51 @@ package config
 
 import (
 	_ "embed"
+	"sync/atomic"
 )
 
-type SingBoxConfig struct {
-	Version string `yaml:"version"`
-	JSON    string `yaml:"json"`
-	JS      string `yaml:"js"`
-}
-
-type ResolveDomainConfig struct {
-	Enable      bool   `yaml:"enable"`
-	Provider    string `yaml:"provider"`
-	Type        string `yaml:"type"`
-	Cache       string `yaml:"cache"`
-	CacheTTL    int    `yaml:"cache-ttl"`
-	Edns        string `yaml:"edns"`
-	Concurrency int    `yaml:"concurrency"`
-	Timeout     int    `yaml:"timeout"`
-}
-
-// SubProcessConfig sub 订阅的操作配置。
-type SubProcessConfig struct {
-	// ResolveDomain DNS解析配置
-	// NodeSplit=true 时自动隐式开启
-	ResolveDomain ResolveDomainConfig `yaml:"resolve-domain"`
-
-	// NodeSplit 开启节点裂变（将多 IP 展开为独立节点）
-	// 为 true 时自动前置开启 ResolveDomain
-	NodeSplit bool `yaml:"node-split"`
-
-	// RegexFilterKeep true=保留匹配节点（白名单），false=丢弃匹配节点（黑名单）
-	RegexFilterKeep bool `yaml:"regex-filter-keep"`
-
-	// RegexFilter 正则筛选表达式列表，nil/空 = 不启用
-	RegexFilter []string `yaml:"regex-filter"`
-
-	// RegexSort 正则排序表达式列表（固定 asc），nil/空 = 不启用
-	RegexSort []string `yaml:"regex-sort"`
-
-	// SubInfo 注入订阅流量信息节点
-	// - 已存在：仅保留，不覆盖用户对 content / arguments 的修改
-	// - 不存在且为 true：注入默认脚本
-	SubInfo bool `yaml:"sub-info"`
-}
-
 type Config struct {
-	PrintProgress        bool    `yaml:"print-progress"`
-	ProgressMode         string  `yaml:"progress-mode"`
-	Concurrent           int     `yaml:"concurrent"`
-	AliveConcurrent      int     `yaml:"alive-concurrent"`
-	SpeedConcurrent      int     `yaml:"speed-concurrent"`
-	MediaConcurrent      int     `yaml:"media-concurrent"`
-	EnableIPv6           bool    `yaml:"ipv6"`
-	CheckInterval        int     `yaml:"check-interval"`
-	CronExpression       string  `yaml:"cron-expression"`
-	Timeout              int     `yaml:"timeout"`
-	SpeedTestURL         string  `yaml:"speed-test-url"`
-	DownloadTimeout      int     `yaml:"download-timeout"`
-	DownloadMB           int     `yaml:"download-mb"`
-	TotalSpeedLimit      int     `yaml:"total-speed-limit"`
-	Threshold            float32 `yaml:"threshold"`
-	GCThreshold          int64   `yaml:"gc-threshold"`
-	MinSpeed             int     `yaml:"min-speed"`
-	MediaCheckTimeout    int     `yaml:"media-check-timeout"`
-	FilterRegex          string  `yaml:"filter-regex"`
-	SaveMethod           string  `yaml:"save-method"`
-	WebDAVURL            string  `yaml:"webdav-url"`
-	WebDAVUsername       string  `yaml:"webdav-username"`
-	WebDAVPassword       string  `yaml:"webdav-password"`
-	GithubToken          string  `yaml:"github-token"`
-	GithubGistID         string  `yaml:"github-gist-id"`
-	GithubAPIMirror      string  `yaml:"github-api-mirror"`
-	WorkerURL            string  `yaml:"worker-url"`
-	WorkerToken          string  `yaml:"worker-token"`
-	S3Endpoint           string  `yaml:"s3-endpoint"`
-	S3AccessID           string  `yaml:"s3-access-id"`
-	S3SecretKey          string  `yaml:"s3-secret-key"`
-	S3Bucket             string  `yaml:"s3-bucket"`
-	S3UseSSL             bool    `yaml:"s3-use-ssl"`
-	S3BucketLookup       string  `yaml:"s3-bucket-lookup"`
-	SubUrlsReTry         int     `yaml:"sub-urls-retry"`
-	SubUrlsRetryInterval int     `yaml:"sub-urls-retry-interval"`
-	SubUrlsTimeout       int     `yaml:"sub-urls-timeout"`
-	SubUrlMaxSizeMB      int     `yaml:"sub-url-max-size-mb"`
+	PrintProgress   bool   `yaml:"print-progress"`
+	ProgressMode    string `yaml:"progress-mode"`
+	Concurrent      int    `yaml:"concurrent"`
+	AliveConcurrent int    `yaml:"alive-concurrent"`
+	MediaConcurrent int    `yaml:"media-concurrent"`
+	EnableIPv6      bool   `yaml:"ipv6"`
+	Timeout         int    `yaml:"timeout"`
+
+	// AliveCheck 测活探测方式:
+	//   urltest — mihomo 同源 Proxy.URLTest（默认，返回延迟并写 DelayHistory）
+	//   http    — 旧版 gstatic HEAD（判定口径与历史版本一致，作为回退）
+	AliveCheck string `yaml:"alive-check"`
+
+	// AliveURL 测活探测 URL，必须返回 204（状态码固定 204，不开放配置）
+	AliveURL string `yaml:"alive-url"`
+
+	// AliveRetry 测活复测次数。只对 reset/EOF 等“快速失败”的可重试错误复测，
+	// 超时不复测（避免死节点耗时翻倍）；0 或负数 = 关闭复测。默认 1。
+	AliveRetry int `yaml:"alive-retry"`
+
+	// TotalSpeedLimit 全局连接层限速(MB/s)，0=不限。
+	// 作用于所有代理连接的读流量（测活/媒体检测通用），与已删除的测速功能无关。
+	TotalSpeedLimit   int     `yaml:"total-speed-limit"`
+	Threshold         float32 `yaml:"threshold"`
+	GCThreshold       int64   `yaml:"gc-threshold"`
+	MediaCheckTimeout int     `yaml:"media-check-timeout"`
+
+	// FilterRegex 正则筛选：作为 Sub-Store 官方节点操作 `Regex Filter` 注入到
+	// 本程序推送的 sub.process 首位，由 Sub-Store 在下载/产出时执行。
+	// 匹配节点 name；多条任一命中；(?i) 前缀 = 忽略大小写；JS 正则语法。
+	// 留空 = 不注入。注意：非法 JS 正则会导致订阅下载/产出失败。
+	FilterRegex []string `yaml:"filter-regex"`
+
+	// FilterRegexKeep true=保留命中节点(默认)，false=剔除命中节点
+	FilterRegexKeep bool `yaml:"filter-regex-keep"`
+
+	GithubToken          string `yaml:"github-token"`
+	SubUrlsReTry         int    `yaml:"sub-urls-retry"`
+	SubUrlsRetryInterval int    `yaml:"sub-urls-retry-interval"`
+	SubUrlsTimeout       int    `yaml:"sub-urls-timeout"`
+	SubUrlMaxSizeMB      int    `yaml:"sub-url-max-size-mb"`
 
 	// SubsParseBatch 每批次发往去重队列的节点数
 	// 生产者攒够该数量后整批发送，消费者逐批接收处理。
@@ -121,21 +83,17 @@ type Config struct {
 	RenameNode       bool     `yaml:"rename-node"`
 	UseLastResult    bool     `yaml:"use-last-result"`
 	UseHistoryResult bool     `yaml:"use-history-result"`
-	OutputDir        string   `yaml:"output-dir"`
+
+	// KeepSuccessProxies 旧配置项（兼容保留）：true 等效 use-last-result + use-history-result，
+	// 加载后由 app.loadConfig 归并到上面两个字段，本字段不参与实际读取逻辑。
+	KeepSuccessProxies bool `yaml:"keep-success-proxies"`
+
+	OutputDir string `yaml:"output-dir"`
 	// ConfigDir 运行时由 app.loadConfig 注入，值为当前配置文件所在目录。
 	// 不参与 YAML 序列化，仅供 save/method/local.go 计算默认输出路径使用。
-	ConfigDir            string   `yaml:"-"`
-	AppriseAPIServer     string   `yaml:"apprise-api-server"`
-	RecipientURL         []string `yaml:"recipient-url"`
-	NotifyTitle          string   `yaml:"notify-title"`
-	SubStoreUpdateCron   string   `yaml:"sub-store-update-cron"`
-	SubStoreUpdateNotify bool     `yaml:"sub-store-update-notify"`
-	SubStorePort         string   `yaml:"sub-store-port"`
-	SubStorePath         string   `yaml:"sub-store-path"`
-	SubStoreSyncCron     string   `yaml:"sub-store-sync-cron"`
-	SubStorePushService  string   `yaml:"sub-store-push-service"`
-	SubStoreProduceCron  string   `yaml:"sub-store-produce-cron"`
-	MihomoOverwriteURL   string   `yaml:"mihomo-overwrite-url"`
+	ConfigDir    string `yaml:"-"`
+	SubStorePort string `yaml:"sub-store-port"`
+	SubStorePath string `yaml:"sub-store-path"`
 
 	// ISPCheck 是否开启出口 ISP 类型检测（机房/住宅/移动/商宽/教育/政府/银行等）
 	ISPCheck bool `yaml:"isp-check"`
@@ -163,52 +121,44 @@ type Config struct {
 	// 免费额度：每天 1500 次（或每月 45000 次）
 	ISPCheckAPIKeyIPData string `yaml:"isp-check-api-key-ipdata"`
 
-	MediaCheck            bool     `yaml:"media-check"`
-	Platforms             []string `yaml:"platforms"`
-	MaxMindDBUpdateNotify bool     `yaml:"maxmind-db-update-notify"`
-	MaxMindDBPath         string   `yaml:"maxmind-db-path"`
-	DropBadCfNodes        bool     `yaml:"drop-bad-cf-nodes"`
-	EnhancedTag           bool     `yaml:"enhanced-tag"`
-	SuccessLimit          int32    `yaml:"success-limit"`
-	NodePrefix            string   `yaml:"node-prefix"`
-	NodeType              []string `yaml:"node-type"`
-	NodeLoc               []string `yaml:"node-loc"`
-	EnableWebUI           bool     `yaml:"enable-web-ui"`
-	APIKey                string   `yaml:"api-key"`
-	SharePassword         string   `yaml:"share-password"`
-	CallbackScript        string   `yaml:"callback-script"`
-	SystemProxy           string   `yaml:"system-proxy"`
-	GithubProxy           string   `yaml:"github-proxy"`
-	GithubProxyGroup      []string `yaml:"ghproxy-group"`
-	EnableSelfUpdate      bool     `yaml:"update"`
-	UpdateOnStartup       bool     `yaml:"update-on-startup"`
-	CronCheckUpdate       string   `yaml:"cron-check-update"`
-	Prerelease            bool     `yaml:"prerelease"`
-	UpdateTimeout         int      `yaml:"update-timeout"`
-
-	// Singbox 支持最新版和 iOS 兼容版
-	SingboxLatest SingBoxConfig `yaml:"singbox-latest"`
-
-	// SingboxExtra 由于singbox各个版本配置不同，额外配置很有用
-	SingboxExtra SingBoxConfig `yaml:"singbox-extra"`
-
-	// SubProcess sub 订阅操作配置
-	SubProcess SubProcessConfig `yaml:"sub-process"`
+	MediaCheck       bool     `yaml:"media-check"`
+	Platforms        []string `yaml:"platforms"`
+	MaxMindDBPath    string   `yaml:"maxmind-db-path"`
+	DropBadCfNodes   bool     `yaml:"drop-bad-cf-nodes"`
+	EnhancedTag      bool     `yaml:"enhanced-tag"`
+	SuccessLimit     int32    `yaml:"success-limit"`
+	NodePrefix       string   `yaml:"node-prefix"`
+	NodeType         []string `yaml:"node-type"`
+	NodeLoc          []string `yaml:"node-loc"`
+	CallbackScript   string   `yaml:"callback-script"`
+	SystemProxy      string   `yaml:"system-proxy"`
+	GithubProxy      string   `yaml:"github-proxy"`
+	GithubProxyGroup []string `yaml:"ghproxy-group"`
 }
 
 var OriginDefaultConfig = &Config{
-	ListenPort:         ":8199",
-	NotifyTitle:        "🔔 节点状态更新",
-	MihomoOverwriteURL: "http://127.0.0.1:8199/Mihomo-Rules-CDN.yaml",
+	ListenPort: ":8199",
+
+	// 拉取订阅并发度：缺省时必须 >=1，否则无缓冲信号量会让获取订阅阶段永久挂起
+	Concurrent: 10,
+
+	// 测活超时：缺省 0 会让测活没有任何截止时间（挂死节点耗尽拨号超时），与示例配置对齐
+	Timeout: 6000,
+
+	// 测活：默认 mihomo 同源 URLTest，可整体回退到旧版 http HEAD
+	AliveCheck: "urltest",
+	AliveURL:   "https://gstatic.com/generate_204",
+	AliveRetry: 1,
+
+	// 筛选：FilterRegex 默认空（不注入 Sub-Store 节点操作）
+	FilterRegexKeep: true,
+
 	Platforms: []string{
 		"iprisk",
 		"openai",
 		"gemini",
 		"youtube",
 	},
-	DownloadMB:       20,
-	EnableSelfUpdate: true,
-	CronCheckUpdate:  "0 0,9,21 * * *",
 
 	Threshold:   0.75,
 	GCThreshold: 20000,
@@ -226,33 +176,37 @@ var OriginDefaultConfig = &Config{
 	UseLastResult:    false,
 	UseHistoryResult: false,
 
-	// Sub-Store 资源默认每周五更新
-	SubStoreUpdateCron: "14 13 * * 5",
-
-	// 默认开启 Sub-Store 更新通知
-	SubStoreUpdateNotify: true,
-
-	SubProcess: SubProcessConfig{
-		ResolveDomain: ResolveDomainConfig{
-			Enable:      false,
-			Provider:    "Ali",
-			Type:        "IPv4",
-			Cache:       "enabled",
-			CacheTTL:    3600,
-			Edns:        "",
-			Concurrency: 10,
-			Timeout:     8000,
-		},
-		NodeSplit:       false,
-		RegexFilterKeep: true, // 默认白名单
-		SubInfo:         false,
-	},
-
 	ISPTimeout: 5, // 默认 5 秒，最高 15 秒
 }
 
-// GlobalConfig 指向当前生效配置
-var GlobalConfig = &Config{} // 初始化为空，首次加载后赋值
+// global 保存当前生效配置，只能通过 Set/Mutate 发布。
+var global atomic.Pointer[Config]
+
+// Get 返回当前生效配置的只读快照。
+//
+// 快照一旦发布即视为**不可变**：任何字段修改都必须走 Set（整体替换）
+// 或 Mutate（拷贝-修改-发布），禁止对返回指针做原地写入（会造成数据竞争）。
+// 同函数内多次读取建议在入口取一次快照（cfg := config.Get()）。
+// 尚未加载（首次 Set 之前）时返回零值配置，与旧版 GlobalConfig 初始态一致。
+func Get() *Config {
+	if c := global.Load(); c != nil {
+		return c
+	}
+	return &Config{}
+}
+
+// Set 发布新配置，是全局配置的唯一整体替换入口。
+func Set(c *Config) {
+	global.Store(c)
+}
+
+// Mutate 对当前配置做值拷贝，交给 fn 修改后发布（copy-on-write）。
+// 并发写场景下的唯一合法就地修改方式。
+func Mutate(fn func(*Config)) {
+	cp := *Get()
+	fn(&cp)
+	Set(&cp)
+}
 
 //go:embed config.yaml.example
 var DefaultConfigTemplate []byte

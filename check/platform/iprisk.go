@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,9 +11,9 @@ import (
 	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
-func CheckIPRisk(httpClient *http.Client, ip string) (string, error) {
+func CheckIPRisk(ctx context.Context, httpClient *http.Client, ip string) (string, error) {
 	// TODO: 增加 "https://www.abuseipdb.com/check/${LOCAL_IP}"
-	req, err := http.NewRequest("GET", utils.JoinURL("https://scamalytics.com/ip", ip), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", utils.JoinURL("https://scamalytics.com/ip", ip), nil)
 	if err != nil {
 		return "", err
 	}
@@ -46,14 +47,21 @@ func CheckIPRisk(httpClient *http.Client, ip string) (string, error) {
 		var score, rist string
 		{
 			score = strings.TrimSpace(lines[4])
-			tmp := strings.Split(score, ":")
-			score = strings.ReplaceAll(tmp[1], "\"", "")
-			score = strings.ReplaceAll(score, ",", "")
+			// 响应格式无 ":" 时不能直接取 tmp[1]——单条畸形数据会 panic 整个进程
+			if _, v, ok := strings.Cut(score, ":"); ok {
+				score = strings.ReplaceAll(v, "\"", "")
+				score = strings.ReplaceAll(score, ",", "")
+			} else {
+				return "", fmt.Errorf("IP Fraud Risk API 响应第5行缺少冒号: %q", score)
+			}
 
 			rist = strings.TrimSpace(lines[5])
-			tmp = strings.Split(rist, ":")
-			rist = strings.ReplaceAll(tmp[1], "\"", "")
-			rist = strings.ReplaceAll(rist, ",", "")
+			if _, v, ok := strings.Cut(rist, ":"); ok {
+				rist = strings.ReplaceAll(v, "\"", "")
+				rist = strings.ReplaceAll(rist, ",", "")
+			} else {
+				return "", fmt.Errorf("IP Fraud Risk API 响应第6行缺少冒号: %q", rist)
+			}
 		}
 
 		if score != "" && rist != "" {

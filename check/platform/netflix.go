@@ -1,12 +1,13 @@
 package platform
 
 import (
+	"context"
 	"net/http"
 )
 
-func CheckNetflix(httpClient *http.Client) (bool, error) {
+func CheckNetflix(ctx context.Context, httpClient *http.Client) (bool, error) {
 	// https://www.netflix.com/title/81280792
-	req, err := http.NewRequest("GET", "https://www.netflix.com/title/81280792", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://www.netflix.com/title/81280792", nil)
 	if err != nil {
 		return false, err
 	}

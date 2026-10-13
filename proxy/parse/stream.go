@@ -115,7 +115,7 @@ func ParseSubscriptionDataStream(
 						strList = append(strList, s)
 					}
 				}
-				nodes, d := ParseProxyLinksAndConvert(strList, subURL)
+				nodes, d := ParseProxyLinksAndConvert(strList, subURL, false)
 				stats["BatchDedup"] += d // ← 批次去重数汇入 stats
 				drain(nodes, "StringList")
 				return stats, nil
@@ -155,7 +155,12 @@ func ParseSubscriptionDataStream(
 	}
 
 	anyHit := false
-	v2rayOK := false // 整体 ConvertsV2Ray 是否成功：成功时逐行解析可跳过已转换过的标准链接行
+	// v2rayOK：步骤①整文件标准转换成功后，步骤②对“未被 Fixup 改写”的标准链接
+	// 不必再跑同一个转换器（同输入同函数，结果必然重复——这正是明文订阅被完整
+	// 解析两遍、第二遍全部被去重丢弃的根源）。
+	// 无损论证：Fixup 只改 hy://（改写后的链接仍走②转换）；mieru 等非标由
+	// 下方全量 Extra 恢复；WG/SSR/裸 host:port 分支与①无关不受影响。
+	v2rayOK := false
 
 	if nodes, err := convert.ConvertsV2Ray(data); err == nil && len(nodes) > 0 {
 		anyHit = true
@@ -165,10 +170,18 @@ func ParseSubscriptionDataStream(
 			stats["LineDedup"] = lineDeduped
 			return stats, nil
 		}
+		// 非标格式（mieru 等）恢复：对全量原文跑一次 Extra，
+		// 替代旧实现逐 chunk 重复扫描（chunk 路径仅在未覆盖时保留）
+		if extraNodes, err := ConvertsV2RayExtra(data); err == nil && len(extraNodes) > 0 {
+			if !drainLine(ToNormalizeNodes(extraNodes), "Extra") {
+				stats["LineDedup"] = lineDeduped
+				return stats, nil
+			}
+		}
 	}
 	if nodes, d := parseRawLinesOpt(data, subURL, v2rayOK); len(nodes) > 0 {
 		anyHit = true
-		stats["BatchDedup"] += d // ← parseRawLines 内部批次去重数
+		stats["BatchDedup"] += d // ← parseRawLinesOpt 内部批次去重数
 		if !drainLine(nodes, "RawLines") {
 			stats["LineDedup"] = lineDeduped
 			return stats, nil
@@ -188,8 +201,9 @@ func ParseSubscriptionDataStream(
 			return stats, nil
 		}
 	}
-	// 注：ParseSurfboardProxies 直接调用 ParseBracketKVProxies，二者解析结果完全相同，
-	// 这里不再单独调用 Surfboard（它的产出会被上面的跨解析器去重全部丢弃），统一由下面的 BracketKV 处理。
+	// （已删除）Surfboard 步骤⑤：与下方无条件的 ParseBracketKVProxies 是同一个
+	// 解析器（⑦ 的 Bracket KV 格式完全覆盖 Surge/Surfboard 的 [Proxy] 行），
+	// 只是把同样的结果多解析一遍再被去重丢弃
 	if nodes := ParseV2RayJSONLines(data); len(nodes) > 0 {
 		anyHit = true
 		if !drainLine(nodes, "V2RayJSON") {

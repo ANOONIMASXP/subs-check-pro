@@ -45,14 +45,19 @@ func cfCommonHeaders() map[string]string {
 	}
 }
 
-// CheckCloudflare 检测当前客户端是否可以访问 Cloudflare CDN
-func CheckCloudflare(httpClient *http.Client) (cloudflare bool, cfRelayLoc string, cfRelayIP string) {
+// CheckCloudflare 检测当前客户端是否可以访问 Cloudflare CDN。
+// ctx 为调用方（测活 stage）上下文：取消后立即停止重试/回退，
+// 否则 ForceClose 后每个在途节点还要白烧最多 ~20s。
+func CheckCloudflare(ctx context.Context, httpClient *http.Client) (cloudflare bool, cfRelayLoc string, cfRelayIP string) {
 	const retries = 2
 	var ok bool
 	var err error
 
 	for i := range retries {
-		ok, err = checkCFEndpoint(httpClient, "http://cp.cloudflare.com/generate_204", 204)
+		if ctx.Err() != nil {
+			return false, "", ""
+		}
+		ok, err = checkCFEndpoint(ctx, httpClient, "http://cp.cloudflare.com/generate_204", 204)
 		if ok {
 			break
 		}
@@ -60,13 +65,17 @@ func CheckCloudflare(httpClient *http.Client) (cloudflare bool, cfRelayLoc strin
 			break
 		}
 		if i < retries-1 {
-			time.Sleep(time.Duration(i+1) * 300 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return false, "", ""
+			case <-time.After(time.Duration(i+1) * 300 * time.Millisecond):
+			}
 		}
 	}
 
 	if err != nil || !ok {
 		slog.Debug("Cloudflare 204 连通性预检失败", "error", err, "ok", ok)
-		cfRelayLoc, cfRelayIP = GetCFTrace(httpClient)
+		cfRelayLoc, cfRelayIP = GetCFTrace(ctx, httpClient)
 
 		if cfRelayLoc != "" && cfRelayIP != "" {
 			slog.Debug("Cloudflare CDN 检测成功", "loc", cfRelayLoc, "ip", cfRelayIP)
@@ -80,8 +89,9 @@ func CheckCloudflare(httpClient *http.Client) (cloudflare bool, cfRelayLoc strin
 }
 
 // GetCFTrace 获取 Cloudflare Trace 的 loc 和 ip,并设置 10s 超时
-func GetCFTrace(httpClient *http.Client) (string, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// （超时基于父 ctx 派生，父取消时立即返回）
+func GetCFTrace(ctx context.Context, httpClient *http.Client) (string, string) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return FetchCFTraceFirstConcurrent(httpClient, ctx, cancel)
 }
@@ -113,8 +123,9 @@ func FetchCFTraceFirstConcurrent(httpClient *http.Client, ctx context.Context, c
 	var once sync.Once
 	var wg sync.WaitGroup
 
-	// 订阅拉取的重试次数不适合直接用在这里：过大时会在失败后紧贴着狂刷请求；为 0 时则一次都不会请求
-	retries := min(max(config.GlobalConfig.SubUrlsReTry, 1), 1)
+	// 下限 1：sub-urls-retry: 0 会让整个 CF-trace 零次尝试，
+	// 导致 drop-bad-cf-nodes 把所有走不通 generate_204 的节点全部误杀
+	retries := max(1, config.Get().SubUrlsReTry)
 
 	for _, baseURL := range apis {
 		wg.Add(1)
@@ -199,9 +210,9 @@ func FetchCFTrace(httpClient *http.Client, ctx context.Context, baseURL string) 
 }
 
 // checkCFEndpoint 检查指定的 Cloudflare 端点是否可达，并返回是否成功和错误信息
-func checkCFEndpoint(httpClient *http.Client, url string, expectedStatus int) (bool, error) {
+func checkCFEndpoint(parent context.Context, httpClient *http.Client, url string, expectedStatus int) (bool, error) {
 	timeout := 3 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)

@@ -11,14 +11,11 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/gin-gonic/gin"
 	"github.com/metacubex/mihomo/component/resolver"
-	"github.com/robfig/cron/v3"
 	"github.com/sinspired/subs-check-pro/v3/app/monitor"
 	"github.com/sinspired/subs-check-pro/v3/check"
 	"github.com/sinspired/subs-check-pro/v3/config"
@@ -33,62 +30,25 @@ type App struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	configPath string
-	interval   int
 	watcher    *fsnotify.Watcher
 	// watcherCancel 用于停止轮询配置监听 goroutine（inotify 不可用时的降级方案）。
 	// 若 inotify 正常工作则此字段为 nil。
 	watcherCancel context.CancelFunc
-	checkChan     chan struct{} // 触发检测的通道
-	checking      atomic.Bool   // 检测状态标志
-	ticker        *time.Ticker
-	done          chan struct{} // 用于结束ticker goroutine的信号
-	cron          *cron.Cron    // crontab调度器（代理检测定时任务）
-	// updateCron 版本更新定时任务调度器，独立存储以便 SetupUpdateTasks 重调时先停止旧实例，
-	// 避免每次配置变更触发重建时 goroutine 持续累积。
-	updateCron *cron.Cron
-	updateMu   sync.Mutex
+	checking      atomic.Bool // 检测状态标志
 
-	// 用于独立管理各项更新任务的 ID
-	idSelfUpdate cron.EntryID
-	idGeoDB      cron.EntryID
-	idSubStore   cron.EntryID
-
-	version       string
-	originVersion string
-	latestVersion string
-	httpServer    *http.Server
-	stopCh        <-chan struct{}
-
-	lastCheck lastCheckResult
-
-	router *gin.Engine
-
-	// currentTheme 存储用户选择的主题，"auto"/"dark"/"light"
-	currentTheme string
-	themeMu      sync.RWMutex
-}
-
-type lastCheckResult struct {
-	time      atomic.Value // 存储 time.Time
-	duration  atomic.Int64
-	Total     atomic.Int64
-	available atomic.Int64
-	traffic   atomic.Int64
+	httpServer *http.Server
+	stopCh     <-chan struct{}
 }
 
 // New 创建新的应用实例
 // 不再在这里调用 flag.Parse() 或定义 flags，全部由 main 负责。
-func New(originVersion string, version string, configPath string) *App {
+func New(configPath string) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &App{
-		ctx:           ctx,
-		cancel:        cancel,
-		configPath:    configPath,
-		checkChan:     make(chan struct{}),
-		done:          make(chan struct{}),
-		version:       version,
-		originVersion: originVersion,
+		ctx:        ctx,
+		cancel:     cancel,
+		configPath: configPath,
 	}
 }
 
@@ -97,11 +57,6 @@ func (app *App) InitConfigLoad() error {
 	// 初始化配置文件路径
 	if err := app.initConfigPath(); err != nil {
 		return fmt.Errorf("初始化配置文件路径失败: %w", err)
-	}
-
-	// 迁移旧配置文件
-	if err := app.migrateConfig(); err != nil {
-		slog.Warn("Singbox 配置迁移失败，跳过迁移继续加载", "error", err)
 	}
 
 	// 加载配置文件
@@ -118,16 +73,10 @@ func (app *App) Initialize() error {
 	}
 	httpPortAvailable, subStorePortAvailable := app.CheckPortConflict()
 
-	if config.GlobalConfig.ListenPort != "" && !httpPortAvailable {
-		listenAddr := normalizeListenAddr(config.GlobalConfig.ListenPort)
-		if os.Getenv("START_FROM_GUI") == "1" {
-			// GUI 模式：记录冲突，跳过启动，让窗口展示提示供用户修改端口
-			slog.Warn("HTTP 端口已被其他进程占用，HTTP 服务未启动，请修改端口后重启",
-				"addr", listenAddr)
-		} else {
-			// CLI 模式：端口冲突属于致命错误，直接返回
-			return fmt.Errorf("HTTP 端口 %s 已被占用，请修改配置中的 listen-port", listenAddr)
-		}
+	if config.Get().ListenPort != "" && !httpPortAvailable {
+		listenAddr := normalizeListenAddr(config.Get().ListenPort)
+		// 端口冲突属于致命错误，直接返回
+		return fmt.Errorf("HTTP 端口 %s 已被占用，请修改配置中的 listen-port", listenAddr)
 	}
 
 	// 初始化配置文件监听
@@ -135,27 +84,14 @@ func (app *App) Initialize() error {
 		return fmt.Errorf("初始化配置文件监听失败: %w", err)
 	}
 
-	app.interval = func() int {
-		if config.GlobalConfig.CheckInterval <= 0 {
-			return 2880
-		}
-		if config.GlobalConfig.CheckInterval <= 60 {
-			return 60
-		}
-		return config.GlobalConfig.CheckInterval
-	}()
-
-	if config.GlobalConfig.ListenPort != "" {
+	if config.Get().ListenPort != "" {
 		if err := app.initHTTPServer(); err != nil {
 			return fmt.Errorf("初始化HTTP服务器失败: %w", err)
 		}
 	}
 
-	if config.GlobalConfig.SubStorePort != "" {
-		// Sub-Store 服务启动时,Singbox 版本号才有意义
-		substore.InitSingboxVersion()
-
-		subStoreAddr := normalizeListenAddr(config.GlobalConfig.SubStorePort)
+	if config.Get().SubStorePort != "" {
+		subStoreAddr := normalizeListenAddr(config.Get().SubStorePort)
 		if !subStorePortAvailable {
 			substore.IsSubStoreRunning.Store(false)
 			slog.Warn("Sub-Store 端口已被其他进程占用，Sub-Store 服务未启动，请修改端口后重启",
@@ -201,9 +137,6 @@ func (app *App) Initialize() error {
 	// 设置信号处理器
 	app.stopCh = utils.SetupSignalHandler(&check.ForceClose, &app.checking)
 
-	// 添加主程序版本更新和maxmind数据，sub-store前后端资源更新
-	app.SetupUpdateTasks()
-
 	return nil
 }
 
@@ -213,132 +146,19 @@ func (app *App) Run() {
 		if app.watcher != nil {
 			_ = app.watcher.Close()
 		}
-		if app.ticker != nil {
-			app.ticker.Stop()
-		}
-		if app.cron != nil {
-			app.cron.Stop()
-		}
-		if app.updateCron != nil {
-			app.updateCron.Stop()
-		}
 		if app.watcherCancel != nil {
 			app.watcherCancel()
 		}
 	}()
 
-	app.setTimer()
-
-	if config.GlobalConfig.CronExpression == "" {
-		app.triggerCheck()
-	}
-
-	// 并发处理 checkChan
-	go func() {
-		for range app.checkChan {
-			go app.triggerCheck()
-		}
-	}()
+	// 启动时立即执行一次检测
+	app.triggerCheck()
 
 	// 阻塞等待 stopCh 被关闭
 	<-app.stopCh
 	err := app.Shutdown()
 	if err != nil {
 		slog.Error("关闭应用失败", "err", err)
-	}
-}
-
-// GetRouter 供 Wails GUI 复用同一路由
-func (app *App) GetRouter() *gin.Engine {
-	return app.router
-}
-
-// GetConfigPath 返回 Initialize() 确定后的配置文件绝对路径。
-// 在 Initialize() 调用前返回空字符串。
-func (app *App) GetConfigPath() string {
-	return app.configPath
-}
-
-// formatNextRunTime 统一格式化下一次运行时间
-func (app *App) formatNextRunTime(next time.Time, loc *time.Location) string {
-	if next.IsZero() {
-		return "未计划"
-	}
-	_, offset := next.Zone()
-	return fmt.Sprintf("%s UTC%+d",
-		next.In(loc).Format("2006-01-02 15:04:05"),
-		offset/3600,
-	)
-}
-
-// setTimer 根据配置设置定时器
-func (app *App) setTimer() {
-	// 停止现有定时器
-	if app.ticker != nil {
-		// 应该先发送停止信号，防止被=nil后panic
-		close(app.done)                // 发送停止信号
-		app.done = make(chan struct{}) // 创建新通道
-		app.ticker.Stop()
-		app.ticker = nil
-	}
-
-	// 停止现有cron
-	if app.cron != nil {
-		app.cron.Stop()
-		app.cron = nil
-	}
-
-	// 检查是否设置了cron表达式
-	if config.GlobalConfig.CronExpression != "" {
-		slog.Info("设置 cron 定时计划", "cron", config.GlobalConfig.CronExpression)
-		app.cron = cron.New()
-		_, err := app.cron.AddFunc(config.GlobalConfig.CronExpression, func() {
-			app.triggerCheck()
-		})
-		if err != nil {
-			app.cron.Stop()
-			slog.Error("cron 表达式 '" + config.GlobalConfig.CronExpression + "' 解析失败: " + err.Error() + "，将使用检测间隔时间")
-			// 使用间隔时间
-			app.useIntervalTimer()
-		} else {
-			app.cron.Start()
-			for _, entry := range app.cron.Entries() {
-				if entry.Valid() && !entry.Next.IsZero() {
-					slog.Warn("激活 cron 检测任务", "next", app.formatNextRunTime(entry.Next, app.cron.Location()))
-				}
-			}
-		}
-	} else {
-		// 使用间隔时间
-		app.useIntervalTimer()
-	}
-}
-
-// useIntervalTimer 使用间隔时间模式运行
-func (app *App) useIntervalTimer() {
-	// 初始化定时器
-	app.ticker = time.NewTicker(time.Duration(app.interval) * time.Minute)
-	done := app.done
-	// 启动一个goroutine监听定时器事件
-	go func() {
-		for {
-			select {
-			case <-app.ticker.C:
-				app.triggerCheck()
-			case <-done:
-				return // 收到停止信号，退出goroutine
-			}
-		}
-	}()
-}
-
-// TriggerCheck 供外部调用的触发检测方法
-func (app *App) TriggerCheck() {
-	select {
-	case app.checkChan <- struct{}{}:
-		slog.Info("手动触发检测")
-	default:
-		slog.Warn("已有检测正在进行，忽略本次触发")
 	}
 }
 
@@ -356,19 +176,7 @@ func (app *App) triggerCheck() {
 		slog.Error("检测代理失败", "error", err)
 	}
 
-	// 检测完成后显示下次检测时间
-	if app.ticker != nil {
-		// 使用间隔时间模式
-		app.ticker.Reset(time.Duration(app.interval) * time.Minute)
-		nextCheck := time.Now().Add(time.Duration(app.interval) * time.Minute)
-		slog.Info("下次检测时间", "time", app.formatNextRunTime(nextCheck, time.Local))
-	} else if app.cron != nil {
-		// 使用cron模式
-		entries := app.cron.Entries()
-		if len(entries) > 0 {
-			slog.Info("下次检测时间", "time", app.formatNextRunTime(entries[0].Next, app.cron.Location()))
-		}
-	}
+	debug.FreeOSMemory()
 	check.CurrentStepName.Store("检测完成")
 
 	// 手动标记检测完成
@@ -380,20 +188,20 @@ func (app *App) triggerCheck() {
 
 // checkProxies 执行代理检测
 func (app *App) checkProxies() error {
-	if config.GlobalConfig.PrintProgress {
+	if config.Get().PrintProgress {
 		slog.Info("启动检测任务", "终端进度条", "显示")
 	} else {
 		slog.Info("启动检测任务", "终端进度条", "隐藏")
 	}
-
-	startTime := time.Now()
 
 	loadHistoricalCheckRate() // 注入历史速率后再开始检测
 
 	check.StartProgress()
 	defer check.StopProgress()
 
-	results, historyNodes, err := check.Check()
+	// historyNodes 为 check 阶段按分数整理的历史节点池；本 fork 的 history.yaml
+	// 走 save 内部与磁盘历史合并的策略（见 save.generateHistory），此处不消费。
+	results, _, err := check.Check()
 	if err != nil {
 		return fmt.Errorf("检测代理失败: %w", err)
 	}
@@ -401,30 +209,18 @@ func (app *App) checkProxies() error {
 	slog.Info("检测完成")
 
 	check.CurrentStepName.Store("保存配置")
-	save.SaveConfig(results, historyNodes)
+	save.SaveConfig(results)
 
 	check.CurrentStepName.Store("更新订阅")
 	utils.UpdateSubs()
 
-	if config.GlobalConfig.CallbackScript != "" {
+	if config.Get().CallbackScript != "" {
 		check.CurrentStepName.Store("执行回调脚本")
 	}
 	// 执行回调脚本
 	utils.ExecuteCallback(len(results))
 
-	endTime := time.Now()
-
-	// 更新 lastCheck 结果（使用 Store 方法确保原子性）
-	app.lastCheck.time.Store(endTime)
-	app.lastCheck.duration.Store(int64(endTime.Sub(startTime).Seconds()))
-	app.lastCheck.Total.Store(int64(check.ProxyCount.Load()))
-	app.lastCheck.available.Store(int64(len(results)))
-	app.lastCheck.traffic.Store(int64(check.TotalBytes.Load()))
-
-	check.CurrentStepName.Store("发送通知")
-	utils.SendNotifyCheckResult(len(results), check.CheckTrafficTotal)
-
-	check.CurrentStepName.Store("清理检测缓存")
+	check.CurrentStepName.Store("内存释放")
 	// 切断所有大对象的应用
 	results = nil //nolint:ineffassign
 	proxyutils.ClearCache()
@@ -507,16 +303,7 @@ func (app *App) Shutdown() error {
 		app.cancel()
 	}
 
-	// 停止 ticker/cron/updateCron/watcher（如果存在）
-	if app.ticker != nil {
-		app.ticker.Stop()
-	}
-	if app.cron != nil {
-		app.cron.Stop()
-	}
-	if app.updateCron != nil {
-		app.updateCron.Stop()
-	}
+	// 停止 watcher（如果存在）
 	if app.watcher != nil {
 		lastErr = app.watcher.Close()
 	}
@@ -529,18 +316,9 @@ func (app *App) Shutdown() error {
 			lastErr = errors.New("关闭 HTTP 服务器失败: " + err.Error())
 			slog.Error("关闭 HTTP 服务器失败", "err", err)
 		} else {
-			listenPort := strings.TrimPrefix(config.GlobalConfig.ListenPort, ":")
+			listenPort := strings.TrimPrefix(config.Get().ListenPort, ":")
 			slog.Info("HTTP 服务器关闭", "port", listenPort)
 		}
-	}
-
-	// 关闭 done 通道以通知定时 goroutine 退出（如果仍在）
-	select {
-	case <-app.done:
-		// already closed or receiving
-	default:
-		// 保护性关闭 done，避免 panic
-		close(app.done)
 	}
 
 	// 等待短时间，给子 goroutine 清理时间（作为最小可行方案）

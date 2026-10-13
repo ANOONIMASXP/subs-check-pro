@@ -138,7 +138,7 @@ func runGhProxyDetection(t *testing.T, proxies []string, listFile, detailFile st
 		return
 	}
 
-	config.GlobalConfig.GithubProxy = best.proxy
+	config.Mutate(func(c *config.Config) { c.GithubProxy = best.proxy })
 	slog.Info("最佳GitHub代理",
 		"githubproxy", best.proxy,
 		"耗时", fmt.Sprintf("%dms", best.cost.Milliseconds()),

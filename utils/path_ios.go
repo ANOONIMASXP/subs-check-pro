@@ -3,39 +3,22 @@
 package utils
 
 import (
-	"github.com/goccy/go-json"
-	"github.com/wailsapp/wails/v3/pkg/application"
+	"log/slog"
 	"os"
+	"path/filepath"
 )
 
-type AppInfo struct {
-	Name     string `json:"name"`
-	Version  string `json:"version"`
-	Build    string `json:"build"`
-	BundleId string `json:"bundleId"`
-}
-
-func GetAppInfo() AppInfo {
-	raw := application.Mobile.AppInfoJSON()
-	var info AppInfo
-	_ = json.Unmarshal([]byte(raw), &info)
-	return info
-}
-
-// iOS 内部存储：StoragePath() = Application Support
+// GetPrivateStorageDir 返回内部存储目录（与可执行文件同级）。
 func GetPrivateStorageDir() string {
-	dir := application.Mobile.StoragePath()
-	if dir != "" {
-		if err := os.MkdirAll(dir, 0755); err == nil {
-			return dir
-		}
+	ex, err := os.Executable()
+	if err != nil {
+		slog.Error("获取程序路径失败", "error", err)
+		return "."
 	}
-
-	// 回退：iOS 推荐使用临时目录
-	return os.TempDir()
+	return filepath.Dir(ex)
 }
 
-// iOS 没有外部存储 → 返回内部存储
+// GetExternalStorageDir 返回外部存储目录（iOS 无外部存储 → 与内部一致）。
 func GetExternalStorageDir() string {
 	return GetPrivateStorageDir()
 }

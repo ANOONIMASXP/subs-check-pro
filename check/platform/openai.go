@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -13,9 +14,9 @@ import (
 // 2.如果只通过cookies检测 或 client检测，res.OpenaiWeb = true，tag为"GPT"
 //
 // 经在Windows和ios客户端测试，如果仅通过一项检测，客户端很大概率不能使用，但web端很大概率可以使用。所以如果全部通过添加了一个角标"⁺",保留仅通过一项检测的tag为"GPT",web端用户几乎不需要发现标签变化。
-func CheckOpenAI(httpClient *http.Client) (cookiesOK, clientOK bool, err error) {
-	cookiesOK, cookiesErr := CheckCookies(httpClient)
-	clientOK, clientErr := CheckClient(httpClient)
+func CheckOpenAI(ctx context.Context, httpClient *http.Client) (cookiesOK, clientOK bool, err error) {
+	cookiesOK, cookiesErr := CheckCookies(ctx, httpClient)
+	clientOK, clientErr := CheckClient(ctx, httpClient)
 	// 优先返回可重试的错误，让 withRetry 决定是否重试整体
 	if cookiesErr != nil {
 		return cookiesOK, clientOK, cookiesErr
@@ -24,8 +25,8 @@ func CheckOpenAI(httpClient *http.Client) (cookiesOK, clientOK bool, err error) 
 }
 
 // CheckCookies 通过检查cookies判断网络访问
-func CheckCookies(httpClient *http.Client) (bool, error) {
-	req, err := http.NewRequest("GET", "https://api.openai.com/compliance/cookie_requirements", nil)
+func CheckCookies(ctx context.Context, httpClient *http.Client) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.openai.com/compliance/cookie_requirements", nil)
 	if err != nil {
 		return false, err
 	}
@@ -47,9 +48,9 @@ func CheckCookies(httpClient *http.Client) (bool, error) {
 }
 
 // CheckClient 通过模拟客户端访问检查app可用性
-func CheckClient(httpClient *http.Client) (bool, error) {
+func CheckClient(ctx context.Context, httpClient *http.Client) (bool, error) {
 	// https://ios.chat.openai.com/public-api/mobile/server_status/v1
-	req, err := http.NewRequest("GET", "https://ios.chat.openai.com", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://ios.chat.openai.com", nil)
 	if err != nil {
 		return false, err
 	}

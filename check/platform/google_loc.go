@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"regexp"
@@ -15,8 +16,8 @@ var rePoliciesCountry = regexp.MustCompile(`\d,\d,200,"([A-Z]{3})"`)
 // GetGoogleCountry 通过 policies.google.com 获取 Google 识别的国家（ISO 3166-1 alpha-2）
 // 不依赖 Cookie，不触发 bot 检测
 // 用途：CheckGemini 触发 bot 检测时的降级来源；YouTube 检测失败时的兜底
-func GetGoogleCountry(client *http.Client) (string, error) {
-	req, err := http.NewRequest("GET", "https://policies.google.com/terms?hl=en-US", nil)
+func GetGoogleCountry(ctx context.Context, client *http.Client) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://policies.google.com/terms?hl=en-US", nil)
 	if err != nil {
 		return "", err
 	}

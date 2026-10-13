@@ -2,7 +2,6 @@
 node_modules/
 **/node_modules/
 .pnpm-store/
-docs-site/
 
 # 忽略 Git 记录
 .git/
@@ -56,7 +55,6 @@ speed_*.csv
 *.new
 
 *.exe
-*.syso
 *.test
 .wiki/
 

@@ -3,7 +3,6 @@ SHELL=/usr/bin/env bash
 
 # 定义变量
 BINARY := subs-check-pro
-COMMIT := $(shell git rev-parse --short HEAD)
 COMMIT_TIMESTAMP := $(shell git log -1 --format=%ct)
 VERSION := $(shell git describe --tags --abbrev=0)
 GO_BIN := go
@@ -11,7 +10,7 @@ GO_BIN := go
 # 构建标志
 CGO_ENABLED := 0
 FLAGS := -trimpath
-LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.CurrentCommit=$(COMMIT)
+LDFLAGS := -s -w -X main.Version=$(VERSION)
 
 # 声明伪目标
 .PHONY: all build run gotool clean help \

@@ -2,236 +2,86 @@
 # 是否显示检测进度（终端）
 print-progress: false
 # 进度条显示模式:
-# 'auto': 根据测活-测速-媒体检测的阶段权重自动显示
+# 'auto': 根据测活-媒体检测的阶段权重自动显示
 # 'stage': 每个阶段完成,显示下一阶段剩余任务
 progress-mode: 'auto'
-
-# -----------计划任务-----------
-# 支持标准cron表达式，如：
-# '0 */6 * * *' 表示每6小时的整点执行
-# '0 4 */2 * *' 表示每2天的4点执行
-# '0 0 1 * *' 表示每月1日0点执行
-# '*/30 * * * *' 表示每30分钟执行一次
-# '0 4,16 * * *' 表示每天凌晨4点和16点执行一次
-
-# cron表达式，如果正确配置此项，将忽略check-interval
-# 每两天的凌晨 4 点执行
-cron-expression: '0 4 */2 * *'
-
-# 检查间隔(分钟)
-# 建议使用 cron-expression 表达式，# 每两天的凌晨 4 点执行
-# 高峰期检测意义真的不大，节点少，而且不稳定
-check-interval: 2880
 
 # -----------检测参数-----------
 # 流水线任务并发数
 # 测活任务受限于CPU和路由器芯片,占用带宽较小,可适当大一点,量力而行
-# 测速阶段占用带宽,如果要设大,建议设置total-speed-limit避免拉满带宽
-# 测速设置了最低两倍缓冲通道,通道占满会阻塞测活任务
-# 测活-测速-媒体检测并行,缓冲通道占满后会成为瓶颈
+# 测活-媒体检测并行,缓冲通道占满后会成为瓶颈
 
-# 以下任意一个设为 0，将开启自动模式，检测速度将会数倍提高
+# 以下各项独立：某项设为 0 即该项走自动档（互不影响另一项）
+# 自动档 = concurrent 的倍率：测活 concurrent×20（上限1000）、媒体 concurrent×10（上限500）
 
 # 测活阶段，建议：10-1000
 alive-concurrent: 200
-# 测速阶段，建议：4-32
-speed-concurrent: 16
 # 媒体解锁检测，建议：10-200
 media-concurrent: 100
+
+# 全局连接层限速(MB/s)，0=不限
+# 作用于所有代理连接的读流量(测活/媒体检测通用)，限制与实际情况可能有一定误差
+total-speed-limit: 0
 
 # 是否启用IPv6，默认禁用
 ipv6: false
 
 # 超时时间(毫秒)(节点的最大延迟)，主要影响测活任务
+# 该值同时是硬性延迟上限: 超过 timeout 的节点必然判死（原 max-delay 的替代用法）
 timeout: 6000
 
-# 并发线程数，用于未设置测活、测速、媒体解锁检测时，自动计算并发数的基准
-# 主要影响获取订阅任务，超过100会设置为100
+# 测活探测方式:
+# urltest — mihomo 同源 Proxy.URLTest(默认, 返回延迟并记录延迟历史)
+# http    — 旧版 gstatic HEAD(判定口径与历史版本完全一致, 用于回退)
+alive-check: urltest
+# 测活探测地址，必须返回 204 (状态码固定 204，不开放配置)
+alive-url: "https://gstatic.com/generate_204"
+# 测活复测次数: 只对 reset/EOF 等快速失败重试, 超时不重试(避免死节点耗时翻倍); 0=关闭
+alive-retry: 1
+
+# 并发线程数，两项基准：①获取订阅任务的并发（上限 50）②未设置测活/媒体检测时自动档的基准
+# 自动档公式：alive = concurrent×20（≤1000），media = concurrent×10（≤500）
 concurrent: 10
 
 # 保存几个成功的节点，为0代表不限制
 # 如果你的并发数量超过这个参数，那么成功的结果可能会大于这个数值
-# success-limit <= success <= success-limit+concurrent
+# success-limit <= success <= success-limit+测活并发
 success-limit: 100
 
-# 是否加载上次检测结果(all.yaml)
-use-last-result: false
-
-# 是否加载并保存历史检测结果(history.yaml)
-use-history-result: false
-
-# -----------下载参数-----------
-# 注意: 节点可能被测速测死(暂时或永久), 经过多次测试, 不用怀疑!
-# 强烈建议设置较低的 min-speed, 强烈建议保留 download-timeout 和 download-mb
-# 最低测速结果舍弃(KB/s)
-min-speed: 128
-# 下载测试时间(s)(与下载链接大小相关，默认最大测试10s)
-download-timeout: 10
-# 单节点测速下载数据大小(MB)限制，0为不限
-download-mb: 20
-# 总下载速度速度限制(MB/s)，0为不限
-# 限制与实际情况可能会有一定误差
-total-speed-limit: 0
-
-# 测速地址(注意 并发数*节点速度<最大网速 否则测速结果不准确)
-# 尽量不要使用Speedtest，Cloudflare提供的下载链接，因为很多节点屏蔽测速网站
-# 如果找不到稳定的测速地址，可以自建测速地址
-# speed-test-url: 'https://github.com/2dust/v2rayN/releases/download/7.16.2/v2rayN-windows-64-SelfContained.zip'
-# speed-test-url: 'random'
-# (留空关闭测速，如节点数量少，网络环境差，请确保测速功能关闭)
-# 建议在深夜、早上、下午等空闲时段检测，避开网络拥堵的晚高峰
-# 出口水管就那么大，运营商只能优先保障直播、影视和游戏之类的正常流量
-speed-test-url: ''
+# 此选项将保存并加载 {上次检测成功的节点} 和 {历次检测成功的节点}
+# 如果为true，则保留之前测试成功的节点
+# 避免因为上游链接更新，导致可用节点丢失
+# 本项目已移除未经验证的 /all.yaml /sub/all.yaml访问
+# 可放心设置CF Tunnel隧道,在外网访问、修改配置
+keep-success-proxies: true
 
 # 相似度阈值(Threshold)映射
 # 1.00 /32 (同 IP / 域名)
 # 0.75 /24 (同 C段 / 主域名)
 # 0.50 /16 (同 B段 / 二级域)
 # 0.25 /8  (同 A段 / 顶级域)
-# 以下设置仅能 [减少] 节点被测速测死的概率, 无法避免被 '反代机房' 中断节点
 threshold: 0.75
 
 # 处理一定数量节点后就进行内存回收
 # 如果过低，内存降低有限，将增加 CPU 使用率
 gc-threshold: 20000
 
-# -----------版本更新-----------
-# 是否开启新版本更新
-# 支持启动时检查更新及定时更新任务,无缝升级新版本
-# 支持apprise API通知渠道
-# true: 自动更新; false: 不更新（仍会提醒新版本）
-update: true
-# 启动时检查更新版本
-update-on-startup: true
-# 定时检查更新
-# '0 9,21 * * *' 每天9点,21点检查更新
-cron-check-update: '0 9-23/1,0,2-7/3 * * *'
-# 使用预发布版本
-prerelease: false
-# 下载新版本超时时间(分钟)(默认2分钟)
-# 如系统代理和github代理不稳定,可适当调大即可
-# 请输入整数
-update-timeout: 10
-
 # -----------WebUI-----------
 # 监听端口，用于直接返回节点信息，方便订阅转换
 # 注意：为方便小白默认监听0.0.0.0:8199，请自行修改
 # 更新需重启程序
-# 本项目移除了对output目录的无限制访问，如确需暴露文件，请将文件放在 output/more 文件夹下
-# 例如:  http://127.0.0.1:8199/more/很多节点.yaml
-# 或设置 share-password 分享订阅
 listen-port: ':8199'
-# 是否启用Web控制面板
-# 如果为false，则不启动Web控制界面，仅启动订阅服务相关接口
-# 访问地址：http://127.0.0.1:8199/admin
-# 建议使用 Cloudflare Tunel隧道 映射主机端口
-# 可使用域名编辑、管理配置,开始、结束检测任务
-# 在项目地址 https://github.com/sinspired/subs-check-pro 查看教程
-enable-web-ui: true
-# 填写Web控制面板的api-key，如果为空，则自动生成 !请在终端窗口查看apikey
-# 配置文件为空时，支持使用环境变量设置 API_KEY
-api-key: ''
-
-# 如果你要分享订阅，请设置订阅分享密码
-# 访问 http://127.0.0.1:8199/sub 验证后查看分享的订阅文件列表
-# 文件位置放在 output/sub/filename.yaml
-# 比如: http://127.0.0.1:8199/sub/{share-password}/all.yaml
-share-password: ''
 
 # -----------SUB-STORE-----------
-# Sub-Store 前后端资源自动更新任务
-sub-store-update-cron: '14 13 * * 5'
-
-# Sub-Store 前后端资源更新通知开关
-sub-store-update-notify: true
-
 # Sub-Store 启动端口，为空则不启动sub-store
 # 更新需重启程序，不可监听局域网IP，只有三种写法 :8299, 127.0.0.1:8299, 0.0.0.0:8299
 sub-store-port: ':8299'
 # sub-store自定义访问路径，后续访问订阅要带上此路径
-# 设置path之后，可以开启订阅分享功能，无需暴露真实的path
+# 设置path之后，无需暴露真实的path
 # 订阅示例：http://127.0.0.1:8299/{sub-store-path}/api/file/mihomo
-# WebUI 支持分享订阅，直接复制订阅链接
 # {建议设置}：首次运行如未设置将自动生成随机路径
 # sub-store-path: '/path'
 sub-store-path: ''
-
-# 覆写订阅的url，这个的作用是生成带指定规则的mihomo/clash.meta订阅链接
-# 防止网络不好，所以现在内置，依赖:8199端口
-# 内置 ACL4SSR_Online_Full 和 Mihomo-Rules-CDN.yaml
-mihomo-overwrite-url: http://127.0.0.1:8199/Mihomo-Rules-CDN.yaml
-
-# Sub-Store 节点操作，针对默认的 sub 订阅
-sub-process:
-  # DNS 解析操作
-  resolve-domain:
-    # 是否开启 DNS 解析
-    enable: false
-    # DNS 服务商（ali / cloudflare / google）
-    provider: ali
-    # EDNS 设置
-    edns: ''
-    # 并发数，默认10，在代理软件中不要超过20
-    concurrency: 10
-    # 超时（毫秒），默认8000
-    timeout: 8000
-    # 解析类型 ipv4 / ipv6
-    type: ipv4
-    # 缓存策略
-    cache: enable
-    # 缓存时长(秒)
-    cache-ttl: 3600
-  # 开启节点裂变（将多 IP 展开为独立节点）
-  node-split: false
-  # 注入订阅流量信息节点
-  sub-info: false
-
-  # true=保留匹配节点（白名单），false=丢弃匹配节点（黑名单）
-  regex-filter-keep: true
-  # 正则筛选表达式列表
-  regex-filter:
-  # - '.*\bYT\b(?!-CN).*'
-
-  # 正则排序表达式列表，按照匹配顺序排序
-  # 正则过滤，国家、协议过滤等操作，请进入 WebUI，点 “订阅管理”操作
-  regex-sort:
-  # - '.*\bSG[¹²]\b.*'
-  # - '.*\bUS[¹²]\b.*'
-  # - '(.*GPT⁺.*)(.*GM.*)'
-  # - '.*\bGM\b.*'
-  # - '.*GPT⁺.*'
-  # - '.*\bYT\b(?!-CN).*'
-
-# singbox规则配置
-# json文件为分流规则
-# js脚本用来根据规则对节点进行处理
-# singbox每个版本规则不兼容，须根据客户端版本选择合适的规则
-singbox-latest:
-  version: 1.14
-  json: 'https://raw.githubusercontent.com/sinspired/sub-store-template/main/1.14.x/sing-box.json'
-  js: 'https://raw.githubusercontent.com/sinspired/sub-store-template/main/1.14.x/sing-box.js'
-
-singbox-extra:
-  version: 1.15-pre
-  json: 'https://raw.githubusercontent.com/sinspired/sub-store-template/main/1.15.x/sing-box.json'
-  js: 'https://raw.githubusercontent.com/sinspired/sub-store-template/main/1.15.x/sing-box.js'
-
-# 以下配置查看sub-store相关的教程：https://hub.docker.com/r/xream/sub-store
-# sub-store同步gist定时任务
-# 定时任务指定时将订阅/文件上传到私有 Gist. 在前端, 叫做 同步 或 同步配置.
-# 55 23 * * * 每天 23 点 55 分(避开部分机场后端每天0点定时重启)
-sub-store-sync-cron: '55 5-23/4 * * *'
-# 定时更新订阅
-# SUB_STORE_PRODUCE_CRON 在后台定时处理订阅. 格式为 0 */2 * * *,sub,sub_A;0 */3 * * *,col,col_B
-# 即每 2 小时处理一次单条订阅 sub_A，每 3 小时处理一次组合订阅 col_B。
-# subs-check-pro 默认上传的订阅名为： sub
-# 比如你有一个sub-store订阅,名称为 jichang,就可以填 0 */2 * * *,sub,sub,jichang
-sub-store-produce-cron: '0 */4 * * *,sub,sub'
-# sub-store推送服务地址
-# 例如：Bark: 'SUB_STORE_PUSH_SERVICE=https://api.day.app/XXXXXXXXXXXX/[推送标题]/[推送内容]'
-# 注意：仅需修改 XXXXXXXXXXXX 为自己的 token，[推送标题]/[推送内容] 会被sub-store自动替换为对应的内容
-# 苹果 App Store 下载 Brak，APP内获取 token
-sub-store-push-service: ''
 
 # -----------节点处理-----------
 # 以节点IP查询位置重命名节点
@@ -256,6 +106,15 @@ node-loc:
 # true: 丢弃
 # false: 保留
 drop-bad-cf-nodes: false
+
+# -----------正则筛选-----------
+# 作为 Sub-Store 官方节点操作 Regex Filter 注入到本程序推送的 sub.process 首位,
+# 由 Sub-Store 在下载/产出时执行, 因此 output/sub 下的产出文件也会被筛掉
+# 匹配节点 name; 多条任一命中; (?i) 前缀=忽略大小写; JS 正则语法
+# 留空 = 不注入。注意: 非法 JS 正则会导致订阅下载/产出失败
+filter-regex: []
+# true=保留命中节点(默认) false=剔除命中节点
+filter-regex-keep: true
 
 # -----------ISP检测-----------
 # 是否开启出口 ISP 类型检测（机房/住宅/移动/商宽/教育/政府/银行等）
@@ -312,10 +171,6 @@ platforms:
 # 前两位字母是实际浏览网站识别的位置,-US⁰为使用CF CDN服务的网站识别的位置,比如GPT, X等
 enhanced-tag: true
 
-# MaxMind 地理数据库每周自动更新，默认关闭通知
-# 设为 true 开启通知
-maxmind-db-update-notify: false
-
 # MaxMind 地理数据库路径
 # 如果为空，则使用内置的数据库文件（解压到output目录）
 # 可以指定本地数据库文件路径，如：/path/to/GeoLite2-Country.mmdb
@@ -328,74 +183,13 @@ maxmind-db-path: ''
 # 注意如果使用docker，目前docker使用的alpine，只有sh，不支持bash
 callback-script: ''
 
-# -----------通知设置-----------
-# 配置通知渠道，将自动发送检测结果通知，新版本通知
-# 访问 https://github.com/sinspired/apprise_vercel 部署通知 API 服务
-# 访问 https://dashboard.digitalplat.org/signup?ref=HZcosTVlmQ 注册免费域名
-# 按提示部署，建议为 Vercel 项目设置自定义域名（国内访问 Vercel 可能受限）。
-# 填写搭建的apprise API server 地址
-# 示例：https://notify.xxxx.us.kg/notify
-# 内置apprise服务，不想搭建仅需填写 recipient-url 即可
-apprise-api-server: 'https://apprise.linkpc.dpdns.org/notify'
-# 通知渠道
-# 支持100+ 个通知渠道，详细格式请参照 https://github.com/caronc/apprise
-# 格式参考：
-# telegram格式：tgram://{bot_token}/{chat_id}
-# 钉钉格式：dingtalk://{Secret}@{ApiKey}
-# QQ邮箱：mailto://{QQ号}:{邮箱授权码}@qq.com
-# 邮箱授权码：设置-账号-POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV服务-开通-继续获取授权码
-# 访问 https://sinspired.github.io/apprise_vercel 查看设置 3分钟搞定通知渠道 教程
-# 访问 https://apprise.linkpc.dpdns.org 测试通知渠道是否正确
-recipient-url:
-# - 'bark://api.day.app/xxxxxxxxxxxxxxx'
-# - 'ntfy://mytopic'
-# - 'tgram://xxxxxx/-1002149239223'
-# - 'dingtalk://xxxxxx@xxxxxxx'
-# - 'mailto://xxxxx:xxxxxx@qq.com'
-
-# 自定义通知标题
-notify-title: '🔔 节点状态更新'
-
 # -----------存储参数-----------
 # 输出目录
 # 如果为空，则为程序所在目录的config目录
 output-dir: ''
 
-# 保存方法
-# 目前支持的保存方法: r2, local, gist, webdav, s3
-save-method: 'local'
-
-# webdav
-webdav-url: 'https://example.com/dav/'
-webdav-username: 'admin'
-webdav-password: 'admin'
-
-# gist id
-github-gist-id: ''
-# github token，不仅用来上传 gist，还用于提升订阅拉取速率和限制
+# github token，用于提升订阅拉取速率和限制
 github-token: ''
-# github api mirror
-github-api-mirror: ''
-
-# r2
-# 将测速结果推送到 Cloudflare Worker的地址
-worker-url: 'https://example.worker.dev'
-# Worker令牌
-worker-token: 1234567890
-
-# s3
-# 将测速结果推送到S3/Minio的地址
-s3-endpoint: '127.0.0.1:9000'
-# S3的访问凭证
-s3-access-id: 'ak'
-s3-secret-key: 'sk'
-# S3的Bucket名称
-s3-bucket: 'public'
-# 是否使用SSL
-s3-use-ssl: false
-# 默认自动判断dns还是path，但一些云厂商不遵循规范，所以有时需要手动设置
-# 可选值：auto, path, dns
-s3-bucket-lookup: 'auto'
 
 # -----------代理环境-----------
 # 优先级 1.system-proxy;2.github-proxy;3.ghproxy-group
@@ -487,7 +281,6 @@ sub-urls-remote:
   # - 'https://example.com/sub-list.txt'
   # - 'https://example.com/sub-list.yaml'
   # - 'https://raw.githubusercontent.com/beck-8/sub-urls/main/%E5%B0%8F%E8%80%8C%E7%BE%8E.txt'
-  # - 'http://localhost:8199/more/extra.txt'
   - 'https://raw.githubusercontent.com/sinspired/airport/main/subs/merged/col.txt'
   - 'https://raw.githubusercontent.com/sinspired/airport/main/subs/merged/cm.txt'
   - 'https://raw.githubusercontent.com/sinspired/airport/main/subs/merged/scan.txt'

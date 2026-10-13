@@ -3,6 +3,7 @@ package substore
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -62,17 +63,17 @@ func (s *LoonKVStore) Write(value *string, key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 1. 核心配置同步落盘，并做漂亮的美化
+	// 1. 核心配置落盘：官方 bundle 已经用 JSON.stringify(cache, null, 2) 序列化完毕，
+	// 这里只做合法性校验后原样写入，绝不再二次 Marshal——否则键序会被重排成字母序，
+	// 与官方 sub-store.json 的插入顺序不一致。
 	if key == "sub-store" {
 		if value == nil {
 			os.Remove(s.mainPath)
 			return true
 		}
-		var obj any
-		if err := json.Unmarshal([]byte(*value), &obj); err == nil {
-			if pretty, err := json.MarshalIndent(obj, "", "  "); err == nil {
-				*value = string(pretty)
-			}
+		if !json.Valid([]byte(*value)) {
+			slog.Error("拒绝写入非法的 Sub-Store 数据文件", "path", s.mainPath)
+			return false
 		}
 		tmp := s.mainPath + ".tmp"
 		if err := os.WriteFile(tmp, []byte(*value), 0o644); err != nil {

@@ -14,13 +14,11 @@ import (
 
 // CurrentStepName 用于 UI 显示当前阶段名称
 var CurrentStepName atomic.Value
-var Processed atomic.Uint32
 var AliveCount atomic.Uint32 // 存储测活可用节点
 
 // ProgressWeight 不同检测阶段的进度权重
 type ProgressWeight struct {
 	alive float64
-	speed float64
 	media float64
 }
 
@@ -30,14 +28,12 @@ type ProgressTracker struct {
 
 	// 已检测数量（执行完计数）
 	aliveDone atomic.Int32
-	speedDone atomic.Int32
 	mediaDone atomic.Int32
 
 	// 成功数量（通过计数）
 	aliveSuccess atomic.Int32
-	speedSuccess atomic.Int32
 
-	// 当前处于 测活-测速-媒体检测 阶段
+	// 当前处于 测活-媒体检测 阶段
 	currentStage atomic.Int32
 
 	// 确保进度条输出完成
@@ -60,10 +56,10 @@ func NewProgressTracker(total int) *ProgressTracker {
 	Available.Store(0)
 
 	// 初始化进度权重
-	progressWeight = getCheckWeight(speedON, mediaON)
+	progressWeight = getCheckWeight(mediaON)
 
 	// 默认阶段名（根据配置）
-	mode := config.GlobalConfig.ProgressMode
+	mode := config.Get().ProgressMode
 	if mode == "stage" {
 		CurrentStepName.Store("测活")
 	} else {
@@ -74,37 +70,20 @@ func NewProgressTracker(total int) *ProgressTracker {
 }
 
 // getCheckWeight 根据启用的检查来确定进度权重的分配。
-func getCheckWeight(speedON, mediaON bool) ProgressWeight {
-	w := ProgressWeight{alive: 85, speed: 10, media: 5} // 默认权重 (全部开启时)
-
-	switch {
-	case !speedON && !mediaON:
-		w = ProgressWeight{alive: 100, speed: 0, media: 0}
-	case !speedON:
-		w = ProgressWeight{alive: 80, speed: 0, media: 20}
-	case !mediaON:
-		w = ProgressWeight{alive: 70, speed: 30, media: 0}
+// 权重取自历史「无测速」分支，保证进度百分比与既有行为完全一致。
+func getCheckWeight(mediaON bool) ProgressWeight {
+	if mediaON {
+		return ProgressWeight{alive: 80, media: 20}
 	}
-
-	return w
+	return ProgressWeight{alive: 100}
 }
 
 // CountAlive 标记一个存活检测已完成，并更新进度。
 func (pt *ProgressTracker) CountAlive(success bool) {
 	pt.aliveDone.Add(1)
-	Processed.Add(1)
 	AliveCount.Add(1)
 	if success {
 		pt.aliveSuccess.Add(1)
-	}
-	pt.refresh()
-}
-
-// CountSpeed 标记一个速度测试已完成，并更新进度。
-func (pt *ProgressTracker) CountSpeed(success bool) {
-	pt.speedDone.Add(1)
-	if success {
-		pt.speedSuccess.Add(1)
 	}
 	pt.refresh()
 }
@@ -120,49 +99,22 @@ func (pt *ProgressTracker) FinishAliveStage() {
 	pt.finishAliveOnce.Do(func() {
 		aliveSucc := int(pt.aliveSuccess.Load())
 		// 如果没有活节点，直接结束
-		if aliveSucc <= 0 && (speedON || mediaON) {
+		if aliveSucc <= 0 && mediaON {
 			pt.Finalize()
 			return
 		}
 
 		// 根据配置动态决定下一个阶段
-		if speedON {
-			pt.currentStage.Store(1) // 进入测速阶段
-		} else if mediaON {
-			pt.currentStage.Store(2) // 跳过测速，直接进入媒体检测阶段
+		if mediaON {
+			pt.currentStage.Store(2) // 进入媒体检测阶段
 		}
 
-		if !speedON && !mediaON && config.GlobalConfig.RenameNode {
+		if !mediaON && config.Get().RenameNode {
 			pt.currentStage.Store(-1)
 		}
 
 		pt.refresh()
 	})
-}
-
-// FinishSpeedStage 在所有速度测试完成后，将追踪器转换到媒体检测阶段。
-func (pt *ProgressTracker) FinishSpeedStage() {
-	if !mediaON {
-		if config.GlobalConfig.RenameNode {
-			pt.currentStage.Store(-1)
-		}
-		pt.refresh()
-		return
-	}
-	speedSucc := int(pt.speedSuccess.Load())
-	if speedON && speedSucc <= 0 {
-		pt.Finalize()
-		return
-	}
-
-	// 切换为媒体检测阶段
-	if mediaON {
-		pt.currentStage.Store(2)
-	} else {
-		pt.Finalize()
-	}
-
-	pt.refresh()
 }
 
 // Finalize 确保进度被标记为 100% 完成。
@@ -179,7 +131,7 @@ func (pt *ProgressTracker) Finalize() {
 
 // refresh 根据所选算法更新进度的统一入口。
 func (pt *ProgressTracker) refresh() {
-	switch config.GlobalConfig.ProgressMode {
+	switch config.Get().ProgressMode {
 	case "stage":
 		pt.refreshStage()
 	default:
@@ -207,11 +159,9 @@ func (pt *ProgressTracker) refreshDynamic() {
 	}
 
 	aliveDone := int(pt.aliveDone.Load())
-	speedDone := int(pt.speedDone.Load())
 	mediaDone := int(pt.mediaDone.Load())
 
 	aliveSucc := int(pt.aliveSuccess.Load())
-	speedSucc := int(pt.speedSuccess.Load())
 
 	// 2. 计算各阶段完成率 (0.0 - 1.0)
 	// 限制最大值为 1.0，防止因异步计数导致瞬间溢出
@@ -227,45 +177,27 @@ func (pt *ProgressTracker) refreshDynamic() {
 
 	rAlive := ratio(aliveDone, realTotal)
 
-	// 测速完成率：分母为测活成功数
-	rSpeed := 0.0
-	if aliveSucc > 0 {
-		rSpeed = ratio(speedDone, aliveSucc)
-	}
-
-	// 媒体检测的分母：如果有测速，则是测速成功数；否则是存活数
-	mediaBase := aliveSucc
-	if speedON {
-		mediaBase = speedSucc
-	}
+	// 媒体检测的分母：存活成功数
 	rMedia := 0.0
-	if mediaBase > 0 {
-		rMedia = ratio(mediaDone, mediaBase)
+	if aliveSucc > 0 {
+		rMedia = ratio(mediaDone, aliveSucc)
 	}
 
 	// 3. 约束系数 (Constraint)
 	// 后一阶段的总体贡献不能超过前一阶段的进度。
-	// 例如：测活只完成了 10%，那么测速即使完成了 100% (相对于已活节点)，
+	// 例如：测活只完成了 10%，那么媒体检测即使完成了 100% (相对于已活节点)，
 	// 它对总进度的贡献也应该受限于测活的 10%。
 
-	// P_Total = (rAlive * wAlive) + (rSpeed * wSpeed * rAlive) + (rMedia * wMedia * rSpeed * rAlive)
+	// P_Total = (rAlive * wAlive) + (rMedia * wMedia * rAlive)
 	// 这种级联乘法能保证进度条平滑，不会因为后一阶段任务量少而瞬间跳变。
 
 	pAlive := rAlive * progressWeight.alive
-	pSpeed := 0.0
 	pMedia := 0.0
-
-	if speedON {
-		pSpeed = rSpeed * progressWeight.speed * rAlive
-		if mediaON {
-			pMedia = rMedia * progressWeight.media * rSpeed * rAlive
-		}
-	} else if mediaON {
-		// 没测速，媒体检测直接受限于测活
+	if mediaON {
 		pMedia = rMedia * progressWeight.media * rAlive
 	}
 
-	finalPercent := pAlive + pSpeed + pMedia
+	finalPercent := pAlive + pMedia
 
 	// 4. 映射回数值
 	if pt.finalized.Load() {
@@ -278,7 +210,6 @@ func (pt *ProgressTracker) refreshDynamic() {
 
 	mapped := uint32(math.Ceil(finalPercent / 100.0 * float64(realTotal)))
 	Progress.Store(min(mapped, uint32(realTotal)))
-	Processed.Store(min(mapped, uint32(realTotal)))
 }
 
 // refreshStage 分阶段算法：分母动态切换
@@ -302,31 +233,10 @@ func (pt *ProgressTracker) refreshStage() {
 		ProxyCount.Store(total)
 		Progress.Store(done)
 
-	case 1: // 测速阶段
-		CurrentStepName.Store("测速")
-		// 分母：上一阶段(Alive)的成功数
-		total := uint32(pt.aliveSuccess.Load())
-		if total == 0 {
-			ProxyCount.Store(0)
-			Progress.Store(0)
-			return
-		}
-
-		done := min(uint32(pt.speedDone.Load()), total)
-
-		ProxyCount.Store(total)
-		Progress.Store(done)
-
 	case 2: // 媒体检测阶段
 		CurrentStepName.Store("媒体")
-		// 分母：上一阶段的成功数
-		var base int32
-		if speedON {
-			base = pt.speedSuccess.Load()
-		} else {
-			base = pt.aliveSuccess.Load()
-		}
-		total := uint32(base)
+		// 分母：测活阶段的成功数
+		total := uint32(pt.aliveSuccess.Load())
 		if total == 0 {
 			ProxyCount.Store(0)
 			Progress.Store(0)
@@ -371,7 +281,11 @@ var progressFinished chan struct{}
 
 // StartProgress 启动进度显示，暴露给外部以便统一管理进度条生命周期
 func StartProgress() {
-	if !config.GlobalConfig.PrintProgress {
+	if !config.Get().PrintProgress {
+		return
+	}
+	// 已在运行则不重复启动：覆盖 channel 会泄漏上一个渲染 goroutine
+	if progressDone != nil {
 		return
 	}
 	progressDone = make(chan struct{})
@@ -395,17 +309,17 @@ func StartProgress() {
 	}()
 }
 
-// StopProgress 停止进度显示
+// StopProgress 停止进度显示。
+// 必须无条件按已启动的 channel 收尾，不能读当前 PrintProgress 配置：
+// 热重载把开关改成 false 后，旧实现提前 return 会让渲染 goroutine 永久泄漏。
 func StopProgress() {
-	if !config.GlobalConfig.PrintProgress {
+	if progressDone == nil {
 		return
 	}
-	if progressDone != nil {
-		close(progressDone)
-		<-progressFinished
-		progressDone = nil
-		progressFinished = nil
-	}
+	close(progressDone)
+	<-progressFinished
+	progressDone = nil
+	progressFinished = nil
 }
 
 // renderProgressString 计算并格式化进度条字符串。
@@ -423,7 +337,7 @@ func renderProgressString() string {
 
 	var percent float64
 	if total == 0 {
-		if ProcessResults.Load() || step == "保存配置" || step == "发送通知" {
+		if ProcessResults.Load() || step == "保存配置" {
 			percent = 100
 		}
 	} else {
@@ -452,7 +366,7 @@ func renderProgressString() string {
 	padding := max(barWidth-len(bar), 0)
 	bar += strings.Repeat(" ", padding)
 
-	return "\r" + step +
+	return "\r\x1b[K" + step +
 		": [" + bar + "] " +
 		strconv.FormatFloat(percent, 'f', 1, 64) + "% " +
 		"(" + strconv.Itoa(currentChecked) + "/" + strconv.Itoa(total) + ") " +

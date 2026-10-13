@@ -6,12 +6,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/goccy/go-yaml"
 
@@ -22,72 +18,27 @@ import (
 	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
-// ProxyCategory 定义代理分类
-type ProxyCategory struct {
-	Name    string
-	Proxies []map[string]any
-	Filter  func(result check.Result) bool
-}
-
 // ConfigSaver 处理配置保存的结构体
 type ConfigSaver struct {
-	methodName string
 	results    []check.Result
-	categories []ProxyCategory
 	saveMethod func([]byte, string) error
 }
 
-// localClient 用于本地 SubStore 请求
-var localClient = &http.Client{
-	Timeout: 30 * time.Second,
-	Transport: &http.Transport{
-		Proxy: nil,
+// localClient 已统一为 utils.LocalHTTPClient（30s 超时、不走代理、HTTP/1.1），
+// 与 Sub-Store 同步、mihomo API 共用同一套本机请求策略
 
-		// 强制 HTTP/1.1，避免本地服务对 HTTP/2 支持不完整
-		ForceAttemptHTTP2: false,
-
-		// 大连接池，避免 TIME_WAIT 导致失败
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
-
-		// 更快的连接建立
-		DisableKeepAlives:  false,
-		DisableCompression: false,
-	},
-}
-
-// NewConfigSaver 创建新的配置保存器，支持显式指定保存方法
-func NewConfigSaver(results []check.Result, historyNodes []map[string]any, saveMethodName string) *ConfigSaver {
-	categories := []ProxyCategory{
-		{Name: "all.yaml", Proxies: nil, Filter: func(r check.Result) bool { return true }},
-		{Name: "mihomo.yaml", Proxies: nil, Filter: func(r check.Result) bool { return true }},
-		{Name: "base64.txt", Proxies: nil, Filter: func(r check.Result) bool { return true }},
-	}
-
-	// 只有在配置开启了保存历史记录时，才将 history.yaml 加入保存队列
-	// 直接使用传入的 historyNodes，因为这批节点已经在 check 阶段完成了加减分、去重和排序
-	if config.GlobalConfig.UseHistoryResult {
-		categories = append(categories, ProxyCategory{
-			Name:    "history.yaml",
-			Proxies: historyNodes,
-			// Filter 设为 false，防止其从本次检测的 results 结果中二次重复抓取
-			Filter: func(r check.Result) bool { return false },
-		})
-	}
-
+// NewConfigSaver 创建新的配置保存器（保存方式固定为 local）
+func NewConfigSaver(results []check.Result) *ConfigSaver {
 	return &ConfigSaver{
-		methodName: saveMethodName,
 		results:    results,
-		saveMethod: getSaverFunc(saveMethodName),
-		categories: categories,
+		saveMethod: getSaverFunc(),
 	}
 }
 
-// SaveConfig 保存配置的入口函数
-func SaveConfig(results []check.Result, historyNodes []map[string]any) {
-	// 在保存前，确保本次检测的所有节点名称完全唯一
-	var resultProxies []map[string]any
+// SaveConfig 保存配置的入口函数（仅本地保存）
+func SaveConfig(results []check.Result) {
+	// 保存前确保本次检测的所有节点名称完全唯一（节点裂变/同参数多来源可能重名）
+	resultProxies := make([]map[string]any, 0, len(results))
 	for _, r := range results {
 		if r.Proxy != nil {
 			resultProxies = append(resultProxies, r.Proxy)
@@ -95,184 +46,188 @@ func SaveConfig(results []check.Result, historyNodes []map[string]any) {
 	}
 	utils.RenameDuplicateNodes(resultProxies)
 
-	// 1. 始终先保存到本地一份
-	localSaver := NewConfigSaver(results, historyNodes, "local")
-	if err := localSaver.Save(); err != nil {
+	saver := NewConfigSaver(results)
+	if err := saver.Save(); err != nil {
 		slog.Error("保存本地配置失败", "err", err)
-	}
-
-	// 2. 如果配置了其他远程保存方式，则执行远程保存
-	remoteMethod := config.GlobalConfig.SaveMethod
-	if remoteMethod != "" && remoteMethod != "local" {
-		remoteSaver := NewConfigSaver(results, historyNodes, remoteMethod)
-		if err := remoteSaver.Save(); err != nil {
-			slog.Error("保存远程配置失败", "method", remoteMethod, "err", err)
-		}
 	}
 }
 
-// Save 执行保存操作
+// Save 执行保存操作。
+// 顺序有依赖：① all.yaml 内含 SyncSubStore 副作用，必须先推送新内容到
+// Sub-Store，② 的 mihomo/base64/singbox 产出才会基于最新节点。
 func (cs *ConfigSaver) Save() error {
-	cs.categorizeProxies()
-
-	for _, category := range cs.categories {
-		if len(category.Proxies) == 0 {
-			slog.Warn("节点为空，跳过保存", "文件", category.Name, "保存方法", cs.methodName)
-			continue
-		}
-
-		// 1. 生成内容 (解耦生成与保存)
-		content, err := cs.generateContent(category)
-		if err != nil {
-			slog.Error("生成内容失败", "文件", category.Name, "err", err)
-			continue
-		}
-		if len(content) == 0 { // 例如 base64 在没有运行 substore 时返回空
-			continue
-		}
-
-		// 2. 写入存储
-		if err := cs.saveMethod(content, category.Name); err != nil {
-			slog.Error("保存失败", "文件", category.Name, "保存方法", cs.methodName, "err", err)
-		}
+	proxies := cs.collectProxies()
+	if len(proxies) == 0 {
+		slog.Warn("节点为空，跳过保存")
+		return nil
 	}
+
+	// ① all.yaml（推送 Sub-Store + 写盘）
+	cs.saveAllYaml(proxies)
+
+	// ② Sub-Store 转换产出（mihomo.yaml / base64.txt / singbox.json）
+	cs.saveSubStoreOutputs()
+
+	// ③ history.yaml（与历史文件 merge 去重）
+	cs.saveHistory(proxies)
 
 	return nil
 }
 
-// categorizeProxies 将代理按类别分类
-func (cs *ConfigSaver) categorizeProxies() {
-	for _, result := range cs.results {
-		for i := range cs.categories {
-			if cs.categories[i].Filter(result) {
-				cs.categories[i].Proxies = append(cs.categories[i].Proxies, result.Proxy)
-			}
-		}
+// collectProxies 收集全部检测结果的代理（五个产物共用同一份，不再按类别拷贝）
+func (cs *ConfigSaver) collectProxies() []map[string]any {
+	proxies := make([]map[string]any, 0, len(cs.results))
+	for _, r := range cs.results {
+		proxies = append(proxies, r.Proxy)
 	}
+	return proxies
 }
 
-// generateContent 根据文件类型生成对应的字节数据
-func (cs *ConfigSaver) generateContent(category ProxyCategory) ([]byte, error) {
-	switch category.Name {
-	case "history.yaml":
-		dedupedProxies := deduplicateByProxyKey(category.Proxies)
-		return yaml.Marshal(map[string]any{"proxies": dedupedProxies})
-	case "all.yaml":
-		return cs.generateAllYaml(category.Proxies)
-	case "mihomo.yaml":
-		return cs.generateMihomo(category.Proxies)
-	case "base64.txt":
-		return cs.generateBase64()
-	default:
-		return nil, fmt.Errorf("未知的文件类型: %s", category.Name)
-	}
-}
-
-func (cs *ConfigSaver) generateAllYaml(proxies []map[string]any) ([]byte, error) {
+// saveAllYaml 生成并写入 all.yaml，同时把同一份 YAML 推送到内置 Sub-Store
+func (cs *ConfigSaver) saveAllYaml(proxies []map[string]any) {
 	yamlData, err := yaml.Marshal(map[string]any{"proxies": proxies})
 	if err != nil {
-		return nil, fmt.Errorf("序列化 %w", err)
+		slog.Error("生成内容失败", "文件", "all.yaml", "err", err)
+		return
 	}
 
-	// 仅在执行本地保存，且 SubStore 运行时触发 SubStore 更新
-	if cs.methodName == "local" && config.GlobalConfig.SubStorePort != "" && substore.IsSubStoreRunning.Load() {
+	// SyncSubStore 副作用：Sub-Store 运行时把检测结果推送到默认 sub 订阅，
+	// 后续 mihomo/base64/singbox 转换产出依赖这一步先完成
+	if subStoreRunning() {
 		substore.SyncSubStore(yamlData)
 	}
-	return yamlData, nil
+
+	cs.write(yamlData, "all.yaml")
 }
 
-func (cs *ConfigSaver) generateMihomo(proxies []map[string]any) ([]byte, error) {
-	fallback := func() ([]byte, error) {
-		return buildMihomoYAML(proxies)
+// saveSubStoreOutputs 通过 Sub-Store 的转换接口产出 mihomo.yaml / base64.txt / singbox.json。
+// Sub-Store 未运行时三项全部静默跳过（与旧行为一致：返回空内容即跳过）。
+func (cs *ConfigSaver) saveSubStoreOutputs() {
+	if !subStoreRunning() {
+		return
 	}
 
-	// 同时检查端口配置和运行状态，避免无效连接
-	if config.GlobalConfig.SubStorePort == "" || !substore.IsSubStoreRunning.Load() {
-		return fallback()
-	}
-
-	targetURL := substore.BaseURL + "/api/file/" + substore.MihomoName
-	resp, err := localClient.Get(targetURL)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		slog.Warn("远程获取 mihomo 失败，回退到本地生成", "err", err, "status", func() int {
-			if resp != nil {
-				return resp.StatusCode
-			}
-			return 0
-		}())
-		return fallback()
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		slog.Warn("读取 mihomo 响应失败，回退到本地生成", "err", err)
-		return fallback()
-	}
-	return body, nil
-}
-
-func (cs *ConfigSaver) generateBase64() ([]byte, error) {
-	if config.GlobalConfig.SubStorePort == "" || !substore.IsSubStoreRunning.Load() {
-		return nil, nil // 不满足条件直接跳过，不报错
-	}
-
-	// http://127.0.0.1:8299/download/sub?target=V2Ray
-	targetURL := substore.BaseURL + "/download/" + substore.SubName + "?target=V2Ray"
-	resp, err := localClient.Get(targetURL)
-	if err != nil {
-		return nil, fmt.Errorf("请求 base64 失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取 base64 失败: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("获取 base64 失败，状态码: %d", resp.StatusCode)
-	}
-	return body, nil
-}
-
-// ---------------- 以下为辅助函数部分 ----------------
-
-// getSaverFunc 根据配置选择保存方法
-func getSaverFunc(methodName string) func([]byte, string) error {
-	switch methodName {
-	case "r2":
-		if err := method.ValiR2Config(); err != nil {
-			return func(b []byte, s string) error { return fmt.Errorf("r2配置不完整: %w", err) }
-		}
-		uploader := method.NewR2Uploader()
-		return uploader.Upload
-	case "gist":
-		if err := method.ValiGistConfig(); err != nil {
-			return func(b []byte, s string) error { return fmt.Errorf("gist配置不完整: %w", err) }
-		}
-		uploader := method.NewGistUploader()
-		return uploader.Upload
-	case "webdav":
-		if err := method.ValiWebDAVConfig(); err != nil {
-			return func(b []byte, s string) error { return fmt.Errorf("webDAV配置不完整: %w", err) }
-		}
-		uploader := method.NewWebDAVUploader()
-		return uploader.Upload
-	case "s3":
-		if err := method.ValiS3Config(); err != nil {
-			return func(b []byte, s string) error { return fmt.Errorf("S3配置不完整: %w", err) }
-		}
-		return method.UploadToS3
-	case "local":
-		fallthrough
-	default:
-		saver, err := method.NewLocalSaver()
+	for _, out := range []struct{ target, file string }{
+		{target: "mihomo", file: "mihomo.yaml"},
+		{target: "V2Ray", file: "base64.txt"},
+		{target: "sing-box", file: "singbox.json"},
+	} {
+		content, err := fetchSubStoreTarget(out.target)
 		if err != nil {
-			return func(b []byte, s string) error { return fmt.Errorf("本地保存器创建失败: %w", err) }
+			slog.Error("生成内容失败", "文件", out.file, "err", err)
+			continue
 		}
-		saver.OutputPath = filepath.Join(saver.OutputPath, "sub")
-		return saver.Save
+		if len(content) == 0 {
+			continue
+		}
+		cs.write(content, out.file)
 	}
+}
+
+// saveHistory 合并历史可用节点并写入 history.yaml
+func (cs *ConfigSaver) saveHistory(proxies []map[string]any) {
+	content, err := cs.generateHistory(proxies)
+	if err != nil {
+		slog.Error("生成内容失败", "文件", "history.yaml", "err", err)
+		return
+	}
+	cs.write(content, "history.yaml")
+}
+
+// write 写入存储；错误只记日志（保持 Save 固定返回 nil 的旧行为）
+func (cs *ConfigSaver) write(content []byte, name string) {
+	if err := cs.saveMethod(content, name); err != nil {
+		slog.Error("保存失败", "文件", name, "err", err)
+	}
+}
+
+// subStoreRunning 判断内置 Sub-Store 是否可用来做格式转换
+func subStoreRunning() bool {
+	return config.Get().SubStorePort != "" && substore.IsSubStoreRunning.Load()
+}
+
+func (cs *ConfigSaver) generateHistory(newProxies []map[string]any) ([]byte, error) {
+	localSubDir, err := getLocalSubDir()
+	if err != nil {
+		return nil, fmt.Errorf("无法获取本地存储路径: %w", err)
+	}
+
+	var existing []map[string]any
+	filePath := filepath.Join(localSubDir, "history.yaml")
+
+	if data, err := ReadFileIfExists(filePath); err == nil && len(data) > 0 {
+		var parsed map[string][]map[string]any
+		if err := yaml.Unmarshal(data, &parsed); err == nil {
+			existing = parsed["proxies"]
+		}
+	}
+
+	merged := mergeUniqueProxies(existing, newProxies)
+	return yaml.Marshal(map[string]any{"proxies": merged})
+}
+
+// fetchSubStoreTarget 从 Sub-Store 拉取指定 target 的转换产出。
+// 统一：共享 30s 超时客户端 + 状态码先行判定 + 错误路径 drain；
+// 调用方前置判断 Sub-Store 是否运行，未运行时不会调用本函数。
+func fetchSubStoreTarget(target string) ([]byte, error) {
+	targetURL := substore.BaseURL + "/download/" + substore.SubName + "?target=" + target
+	resp, err := utils.LocalHTTPClient.Get(targetURL)
+	if err != nil {
+		return nil, fmt.Errorf("请求 %s 产出失败: %w", target, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		utils.DrainBody(resp)
+		return nil, fmt.Errorf("获取 %s 产出失败，状态码: %d", target, resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取 %s 产出失败: %w", target, err)
+	}
+	return body, nil
+}
+
+// getSaverFunc 返回本地保存方法
+func getSaverFunc() func([]byte, string) error {
+	saver, err := method.NewLocalSaver()
+	if err != nil {
+		return func(b []byte, s string) error { return fmt.Errorf("本地保存器创建失败: %w", err) }
+	}
+	saver.OutputPath = filepath.Join(saver.OutputPath, "sub")
+	return saver.Save
+}
+
+// getLocalSubDir 获取本地 sub 文件夹的绝对路径（供 history 等读取使用）
+func getLocalSubDir() (string, error) {
+	saver, err := method.NewLocalSaver()
+	if err != nil {
+		return "", err
+	}
+	outPath := filepath.Join(saver.OutputPath, "sub")
+	if !filepath.IsAbs(outPath) {
+		outPath = filepath.Join(saver.BasePath, outPath)
+	}
+	return outPath, nil
+}
+
+// mergeUniqueProxies 使用可变参数重构，支持合并多个代理列表并去重
+func mergeUniqueProxies(proxyLists ...[]map[string]any) []map[string]any {
+	seen := make(map[string]bool)
+	var result []map[string]any
+
+	for _, list := range proxyLists {
+		for _, p := range list {
+			delete(p, "sub_was_succeed")
+			delete(p, "sub_from_history")
+			key := utils.GenerateProxyKey(p)
+			if !seen[key] {
+				seen[key] = true
+				result = append(result, p)
+			}
+		}
+	}
+	return result
 }
 
 func ReadFileIfExists(path string) ([]byte, error) {
@@ -280,165 +235,4 @@ func ReadFileIfExists(path string) ([]byte, error) {
 		return nil, nil
 	}
 	return os.ReadFile(path)
-}
-
-func buildMihomoYAML(proxies []map[string]any) ([]byte, error) {
-	templateData, err := fetchMihomoTemplate()
-	if err != nil {
-		return nil, fmt.Errorf("获取 mihomo 覆写模板失败: %w", err)
-	}
-	return mergeMihomoTemplate(templateData, proxies)
-}
-
-func mergeMihomoTemplate(templateData []byte, proxies []map[string]any) ([]byte, error) {
-	if len(strings.TrimSpace(string(templateData))) == 0 {
-		return nil, fmt.Errorf("mihomo 覆写模板为空")
-	}
-
-	merged := make(map[string]any)
-	if err := yaml.Unmarshal(templateData, &merged); err != nil {
-		return nil, fmt.Errorf("解析 mihomo 覆写模板失败: %w", err)
-	}
-	templateData = nil //nolint:ineffassign
-	merged["proxies"] = proxies
-	result, err := yaml.Marshal(merged)
-	merged = nil  //nolint:ineffassign
-	proxies = nil //nolint:ineffassign
-	return result, err
-}
-
-func fetchMihomoTemplate() ([]byte, error) {
-	source := strings.TrimSpace(config.GlobalConfig.MihomoOverwriteURL)
-	if source == "" {
-		source = "http://127.0.0.1:8199/Mihomo-Rules-CDN.yaml"
-	}
-
-	if !strings.Contains(source, "://") {
-		return os.ReadFile(source)
-	}
-
-	if utils.IsLocalURL(source) {
-		if data, err := readLocalMihomoTemplate(source); err == nil && len(data) > 0 {
-			return data, nil
-		}
-		return nil, fmt.Errorf("本地模板不可达: %s", source)
-	}
-
-	return fetchAny(
-		utils.WarpURL(source, utils.IsGhProxyAvailable),
-		utils.WarpURL(source, false),
-	)
-}
-
-func readLocalMihomoTemplate(source string) ([]byte, error) {
-	u, err := url.Parse(source)
-	if err != nil {
-		return nil, err
-	}
-	filename := path.Base(u.Path)
-	if filename == "." || filename == "/" || filename == "" {
-		return nil, fmt.Errorf("无效的 mihomo 覆写模板路径: %s", source)
-	}
-
-	saver, err := method.NewLocalSaver()
-	if err != nil {
-		return nil, err
-	}
-
-	candidate := filepath.Join(saver.OutputPath, filename)
-	return ReadFileIfExists(candidate)
-}
-
-func newProxyClient(timeout time.Duration) *http.Client {
-	transport := &http.Transport{}
-	if proxyStr := config.GlobalConfig.SystemProxy; proxyStr != "" {
-		if proxyURL, err := url.Parse(proxyStr); err != nil {
-			slog.Warn("解析系统代理 URL 失败，不使用代理", "proxy_url", proxyStr, "err", err)
-		} else {
-			transport.Proxy = http.ProxyURL(proxyURL)
-		}
-	}
-	return &http.Client{Transport: transport, Timeout: timeout}
-}
-
-func fetchURL(client *http.Client, u string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "clash.meta")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("状态码异常: %d", resp.StatusCode)
-	}
-	return body, nil
-}
-
-func fetchAny(proxyPrefixURL, directURL string) ([]byte, error) {
-	type attempt struct {
-		label  string
-		client *http.Client
-		url    string
-	}
-
-	directClient := &http.Client{Timeout: 20 * time.Second}
-	sysClient := newProxyClient(20 * time.Second)
-
-	attempts := []attempt{
-		{"GithubProxy", directClient, proxyPrefixURL},
-		{"系统代理", sysClient, directURL},
-		{"裸直连", directClient, directURL},
-	}
-
-	seen := make(map[string]struct{})
-	for _, a := range attempts {
-		if _, dup := seen[a.url+a.label]; dup {
-			continue
-		}
-		seen[a.url+a.label] = struct{}{}
-
-		data, err := fetchURL(a.client, a.url)
-		if err != nil {
-			slog.Warn("拉取失败，尝试下一策略", "策略", a.label, "url", a.url, "err", err)
-			continue
-		}
-		slog.Debug("拉取成功", "策略", a.label, "url", a.url)
-		return data, nil
-	}
-	return nil, fmt.Errorf("所有策略均不可达: %s", directURL)
-}
-
-// deduplicateByProxyKey 通过物理连结参数精准去重
-// 由于传入的 proxies 已经按 history_score 降序排列，
-// 这个去重过程会天然保留相同物理节点中分数最高的那一个
-func deduplicateByProxyKey(proxies []map[string]any) []map[string]any {
-	seen := make(map[string]bool)
-	var result []map[string]any
-
-	for _, p := range proxies {
-		// 兜底清理可能残留的旧标签
-		delete(p, "sub_was_succeed")
-		delete(p, "sub_from_history")
-
-		key := utils.GenerateProxyKey(p)
-		if !seen[key] {
-			seen[key] = true
-			result = append(result, p)
-		}
-	}
-
-	// 在历史节点物理去重后，再进行一次名称唯一性处理
-	utils.RenameDuplicateNodes(result)
-
-	return result
 }

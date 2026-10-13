@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -72,7 +73,7 @@ var blockedRegions = map[string]bool{
 //   - (empty, ErrGeminiBotDetected) → IP 被风控，非地区封锁，调用方应降级到 CheckGeminiByCountry
 //   - (empty, otherErr)          → 网络不可达或其他错误
 //   - (empty, nil)               → 请求成功但未能解析地区（页面结构变化）
-func CheckGemini(client *http.Client) (GeminiStatus, error) {
+func CheckGemini(ctx context.Context, client *http.Client) (GeminiStatus, error) {
 	localClient := *client
 
 	var botDetected bool // 闭包捕获，CheckRedirect 触发时标记
@@ -88,7 +89,7 @@ func CheckGemini(client *http.Client) (GeminiStatus, error) {
 		return nil
 	}
 
-	req, err := http.NewRequest("GET", "https://gemini.google.com/", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://gemini.google.com/", nil)
 	if err != nil {
 		return GeminiStatus{}, err
 	}

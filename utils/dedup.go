@@ -193,48 +193,6 @@ func DeleteNodeKey(p map[string]any) {
 	delete(p, nodeKeyField)
 }
 
-// DeduplicateNodes 节点去重
-func DeduplicateNodes(nodes []map[string]any) []map[string]any {
-	if len(nodes) == 0 {
-		return nodes
-	}
-	seen := make(map[string]struct{}, len(nodes))
-	out := nodes[:0]
-	for _, n := range nodes {
-		k := NodeKey(n)
-		if _, dup := seen[k]; dup {
-			continue
-		}
-		seen[k] = struct{}{}
-		nameCount := make(map[string]int) // 用于记录每个 name 出现的次数
-
-		// 检查并处理重名问题
-		if nameRaw, ok := n["name"]; ok {
-			if name, ok := nameRaw.(string); ok {
-				if count, exists := nameCount[name]; exists {
-					// 发现重名，循环寻找一个可用的新名称（添加序号后缀，如 Name-1, Name-2）
-					var newName string
-					for i := count; ; i++ {
-						newName = fmt.Sprintf("%s-%d", name, i)
-						// 确保新名字也没有和别的节点撞名
-						if _, has := nameCount[newName]; !has {
-							nameCount[name] = i + 1 // 更新原名的起始搜索位
-							nameCount[newName] = 1  // 记录这个新名字
-							n["name"] = newName     // 覆盖节点原名
-							break
-						}
-					}
-				} else {
-					nameCount[name] = 1 // 首次出现
-				}
-			}
-		}
-
-		out = append(out, n)
-	}
-	return out
-}
-
 // cleanDomain 验证并清洗域名，统一小写
 func cleanDomain(s string) string {
 	s = strings.TrimSpace(s)

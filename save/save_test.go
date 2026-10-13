@@ -6,115 +6,100 @@ import (
 	"testing"
 
 	"github.com/goccy/go-yaml"
+
+	"github.com/sinspired/subs-check-pro/v3/check"
 	"github.com/sinspired/subs-check-pro/v3/config"
 )
 
-func TestSaveCategoryMihomoFallsBackWithoutSubStore(t *testing.T) {
-	// 防止 GlobalConfig 为 nil 导致 panic
-	if config.GlobalConfig == nil {
-		config.GlobalConfig = &config.Config{}
+// withTempOutputDir 把输出目录指到临时目录，测试结束恢复原配置。
+func withTempOutputDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	prev := config.Get()
+	cp := *prev
+	cp.OutputDir = dir
+	cp.SubStorePort = "" // 无 Sub-Store：mihomo/base64/singbox 三项应静默跳过
+	config.Set(&cp)
+	t.Cleanup(func() { config.Set(prev) })
+
+	return dir
+}
+
+func makeResults(names ...string) []check.Result {
+	results := make([]check.Result, 0, len(names))
+	for _, n := range names {
+		results = append(results, check.Result{Proxy: map[string]any{
+			// GenerateProxyKey 按 server/port 指纹去重（不含 name），
+			// 测试节点必须用与名字绑定的不同 server
+			"name": n, "type": "http", "server": n + ".example", "port": 8080,
+		}})
 	}
-	original := *config.GlobalConfig
-	t.Cleanup(func() {
-		*config.GlobalConfig = original
-	})
+	return results
+}
 
-	config.GlobalConfig.SubStorePort = ""
-	templateFile := filepath.Join(t.TempDir(), "ACL4SSR_Online_Full.yaml")
-	template := "proxy-groups:\n  - name: test-group\n    type: select\n    proxies:\n      - DIRECT\nrules:\n  - MATCH,DIRECT\n"
-	if err := os.WriteFile(templateFile, []byte(template), 0o644); err != nil {
-		t.Fatalf("failed to write template file: %v", err)
+func readProxies(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取 %s 失败: %v", path, err)
 	}
-	config.GlobalConfig.MihomoOverwriteURL = templateFile
-
-	proxies := []map[string]any{
-		{
-			"name":     "test-node",
-			"type":     "ss",
-			"server":   "1.1.1.1",
-			"port":     443,
-			"cipher":   "aes-128-gcm",
-			"password": "test",
-		},
+	var parsed map[string][]map[string]any
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("解析 %s 失败: %v", path, err)
 	}
+	return parsed["proxies"]
+}
 
-	var gotFile string
-	var gotData []byte
+// TestSaveConfigLocalOnly Sub-Store 未运行时只产出 all.yaml + history.yaml，
+// mihomo/base64/singbox 三项静默跳过。
+func TestSaveConfigLocalOnly(t *testing.T) {
+	dir := withTempOutputDir(t)
+	subDir := filepath.Join(dir, "sub")
 
-	// 适配重构后的 ConfigSaver 结构
-	saver := &ConfigSaver{
-		methodName: "mock_test",
-		// 直接将要测试的类别注入 categories
-		categories: []ProxyCategory{
-			{Name: "mihomo.yaml", Proxies: proxies},
-		},
-		// 拦截 saveMethod 来验证输出
-		saveMethod: func(data []byte, filename string) error {
-			gotFile = filename
-			gotData = append([]byte(nil), data...)
-			return nil
-		},
+	SaveConfig(makeResults("node-a", "node-b"))
+
+	all := readProxies(t, filepath.Join(subDir, "all.yaml"))
+	if len(all) != 2 {
+		t.Errorf("all.yaml 节点数 = %d, want 2", len(all))
 	}
-
-	// 触发整个保存与生成流程
-	if err := saver.Save(); err != nil {
-		t.Fatalf("Save returned error: %v", err)
-	}
-
-	if gotFile != "mihomo.yaml" {
-		t.Fatalf("expected save to mihomo.yaml, got %q", gotFile)
-	}
-
-	var parsed map[string]any
-	if err := yaml.Unmarshal(gotData, &parsed); err != nil {
-		t.Fatalf("failed to parse saved yaml: %v", err)
+	hist := readProxies(t, filepath.Join(subDir, "history.yaml"))
+	if len(hist) != 2 {
+		t.Errorf("history.yaml 节点数 = %d, want 2", len(hist))
 	}
 
-	proxiesAny, ok := parsed["proxies"].([]any)
-	if !ok {
-		t.Fatalf("expected proxies to be a list, got %#v", parsed["proxies"])
-	}
-	if len(proxiesAny) != 1 {
-		t.Fatalf("expected 1 proxy in saved yaml, got %d", len(proxiesAny))
-	}
-	proxy0, ok := proxiesAny[0].(map[string]any)
-	if !ok {
-		t.Fatalf("expected first proxy to be a mapping, got %#v", proxiesAny[0])
-	}
-	if proxy0["name"] != "test-node" {
-		t.Fatalf("expected saved proxy name test-node, got %#v", proxy0["name"])
-	}
-
-	if _, ok := parsed["proxy-groups"]; !ok {
-		t.Fatalf("expected saved yaml to keep proxy-groups")
+	for _, f := range []string{"mihomo.yaml", "base64.txt", "singbox.json"} {
+		if _, err := os.Stat(filepath.Join(subDir, f)); !os.IsNotExist(err) {
+			t.Errorf("Sub-Store 未运行时不应产出 %s (err=%v)", f, err)
+		}
 	}
 }
 
-func TestMergeMihomoTemplateKeepsRules(t *testing.T) {
-	template := []byte("proxy-groups:\n  - name: auto\n    type: select\n    proxies:\n      - DIRECT\nrules:\n  - MATCH,DIRECT\n")
-	proxies := []map[string]any{
-		{
-			"name":   "node-a",
-			"type":   "ss",
-			"server": "1.1.1.1",
-			"port":   443,
-		},
-	}
+// TestSaveConfigHistoryMerge 二次保存合并去重：同名同参数节点不膨胀。
+func TestSaveConfigHistoryMerge(t *testing.T) {
+	dir := withTempOutputDir(t)
+	subDir := filepath.Join(dir, "sub")
 
-	data, err := mergeMihomoTemplate(template, proxies)
+	SaveConfig(makeResults("node-a", "node-b"))
+	SaveConfig(makeResults("node-a", "node-c"))
+
+	hist := readProxies(t, filepath.Join(subDir, "history.yaml"))
+	if len(hist) != 3 {
+		t.Errorf("history.yaml 合并后节点数 = %d, want 3（a/b/c 去重）", len(hist))
+	}
+}
+
+// TestSaveConfigEmptyResults 空结果不落盘。
+func TestSaveConfigEmptyResults(t *testing.T) {
+	dir := withTempOutputDir(t)
+
+	SaveConfig(nil)
+
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("mergeMihomoTemplate returned error: %v", err)
+		t.Fatalf("读取输出目录失败: %v", err)
 	}
-
-	var parsed map[string]any
-	if err := yaml.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("failed to parse merged yaml: %v", err)
-	}
-
-	if _, ok := parsed["proxy-groups"]; !ok {
-		t.Fatalf("expected merged yaml to contain proxy-groups")
-	}
-	if _, ok := parsed["rules"]; !ok {
-		t.Fatalf("expected merged yaml to contain rules")
+	if len(entries) != 0 {
+		t.Errorf("空结果不应落盘，输出目录有 %d 项", len(entries))
 	}
 }

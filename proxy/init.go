@@ -13,9 +13,9 @@ func initEnvironment() {
 	utils.IsSysProxyAvailable = utils.GetSysProxy()
 	utils.IsGhProxyAvailable = utils.GetGhProxy()
 	if utils.IsSysProxyAvailable {
-		slog.Info("", "-system-proxy", config.GlobalConfig.SystemProxy)
+		slog.Info("", "-system-proxy", config.Get().SystemProxy)
 	}
 	if utils.IsGhProxyAvailable {
-		slog.Info("", "-github-proxy", config.GlobalConfig.GithubProxy)
+		slog.Info("", "-github-proxy", config.Get().GithubProxy)
 	}
 }

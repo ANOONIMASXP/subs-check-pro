@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -20,14 +19,6 @@ import (
 	"github.com/metacubex/mihomo/common/convert"
 	"github.com/sinspired/subs-check-pro/v3/config"
 )
-
-// CheckProxyResult 代理检测结果
-type CheckProxyResult struct {
-	OK        bool   `json:"ok"`
-	LatencyMS int64  `json:"latency_ms,omitempty"`
-	ProxyUsed string `json:"proxy_used,omitempty"` // 实际检测的代理地址（空值时返回给前端展示）
-	Error     string `json:"error,omitempty"`
-}
 
 var (
 	IsSysProxyAvailable bool
@@ -132,15 +123,15 @@ func GetSysProxy() bool {
 	UnsetAllProxyEnvVars()
 
 	// "direct" 是显式禁用系统代理的硬开关，不再回退自动探测常见端口。
-	if isDirectProxyConfig(config.GlobalConfig.SystemProxy) {
-		config.GlobalConfig.SystemProxy = "direct"
+	if isDirectProxyConfig(config.Get().SystemProxy) {
+		config.Mutate(func(c *config.Config) { c.SystemProxy = "direct" })
 		slog.Info("系统代理已禁用", "strategy", "direct")
 		IsSysProxyAvailable = false
 		return false
 	}
 
 	// 优先使用配置文件中的代理，其次检测常见端口
-	proxy := findAvailableSysProxy(config.GlobalConfig.SystemProxy, commonProxies)
+	proxy := findAvailableSysProxy(config.Get().SystemProxy, commonProxies)
 	if proxy != "" {
 
 		// 设置 HTTP 和 HTTPS 代理
@@ -151,7 +142,7 @@ func GetSysProxy() bool {
 		os.Setenv("ALL_PROXY", proxy)
 
 		// 更新配置中的代理
-		config.GlobalConfig.SystemProxy = proxy
+		config.Mutate(func(c *config.Config) { c.SystemProxy = proxy })
 		slog.Debug("系统代理", "proxy", proxy)
 		IsSysProxyAvailable = true
 		return true
@@ -184,77 +175,18 @@ func UnsetAllProxyEnvVars() {
 	}
 }
 
-// FindBestGhProxyResult 查找最佳 GhProxy 的结果结构体
-type FindBestGhProxyResult struct {
-	OK        bool    `json:"ok"`
-	ProxyUsed string  `json:"proxy_used,omitempty"`
-	LatencyMS int64   `json:"latency_ms,omitempty"`
-	SpeedKBps float64 `json:"speed_kbps,omitempty"`
-	Error     string  `json:"error,omitempty"`
-	FromGroup bool    `json:"-"` // 用于标记是否来自代理组，严格保持原有的日志打印逻辑
-}
+// GetGhProxy 检测 github 代理是否可用，并设置可用的 github 代理
+func GetGhProxy() bool {
+	GhProxy := config.Get().GithubProxy
+	GhProxyGroup := config.Get().GithubProxyGroup
 
-// uniqueStrings 字符串切片去重过滤空值
-func uniqueStrings(input []string) []string {
-	u := make([]string, 0, len(input))
-	m := make(map[string]bool)
-	for _, val := range input {
-		val = strings.TrimSpace(val)
-		if val != "" && !m[val] {
-			m[val] = true
-			u = append(u, val)
-		}
-	}
-	return u
-}
-
-// FindBestGhProxy 从单一配置和组配置中检测并找出最佳的 GitHub 代理
-// isManual: 标识是否为前端 WebUI 手动触发
-func FindBestGhProxy(manualProxy string, isManual bool) FindBestGhProxyResult {
-	var ghProxy string
-	var GhProxyGroup []string
-
-	if isManual {
-		if manualProxy != "" {
-			// 场景 A: 前端输入框有明确的值，只测这一个
-			ghProxy = manualProxy
-			GhProxyGroup = nil
-		} else {
-			// 场景 B: 前端输入框被清空，说明用户对当前保存的值不满意
-			// 强制跳过单测，把原来保存的值放进组里，和组内代理一起并发赛跑！
-			ghProxy = ""
-			GhProxyGroup = append([]string{}, config.GlobalConfig.GithubProxyGroup...)
-			if config.GlobalConfig.GithubProxy != "" {
-				GhProxyGroup = append(GhProxyGroup, config.GlobalConfig.GithubProxy)
-			}
-			GhProxyGroup = uniqueStrings(GhProxyGroup) // 去重
-		}
-	} else {
-		// 场景 C: 后端定时或自动发起的常规检测
-		ghProxy = config.GlobalConfig.GithubProxy
-		GhProxyGroup = config.GlobalConfig.GithubProxyGroup
-	}
-
-	if ghProxy == "" && len(GhProxyGroup) == 0 {
-		return FindBestGhProxyResult{Error: "未配置 GitHub 代理"}
-	}
-
-	// 1. 如果有单独的代理需要测（场景 A 和 C 都会走到这）
-	if ghProxy != "" {
-		start := time.Now()
-		if ok, normalized, speed := checkGhProxyAvailable(ghProxy); ok {
-			cost := time.Since(start)
-			return FindBestGhProxyResult{
-				OK:        true,
-				ProxyUsed: normalized,
-				LatencyMS: cost.Milliseconds(),
-				SpeedKBps: speed,
-				FromGroup: false,
-			}
-		}
-		// 如果是前端手动指定的值（场景 A），一旦失败直接返回，不再测组
-		if isManual && manualProxy != "" {
-			return FindBestGhProxyResult{Error: "指定的 GitHub 代理检测失败"}
+	// 先检测单个 GhProxy
+	if GhProxy != "" {
+		if ok, normalized, _ := checkGhProxyAvailable(GhProxy); ok {
+			config.Mutate(func(c *config.Config) { c.GithubProxy = normalized })
+			slog.Debug("GitHub代理", "normalized", normalized)
+			IsGhProxyAvailable = true
+			return true
 		}
 	}
 
@@ -305,52 +237,22 @@ func FindBestGhProxy(manualProxy string, isManual bool) FindBestGhProxyResult {
 		}
 
 		if best.ok {
-			return FindBestGhProxyResult{
-				OK:        true,
-				ProxyUsed: best.proxy,
-				LatencyMS: best.cost.Milliseconds(),
-				SpeedKBps: best.speedKBps,
-				FromGroup: true, // 标记为来自代理组
-			}
-		}
-	}
-
-	return FindBestGhProxyResult{Error: "所有配置的 GitHub 代理均不可用"}
-}
-
-// GetGhProxy 检测 github 代理是否可用，并设置可用的 github 代理
-func GetGhProxy() bool {
-	if config.GlobalConfig.GithubProxy == "" && len(config.GlobalConfig.GithubProxyGroup) == 0 {
-		slog.Debug("未配置 githubproxy，将不使用 githubproxy")
-		IsGhProxyAvailable = false
-		return false
-	}
-
-	// 后端自动调用时，isManual 传 false，走常规逻辑
-	result := FindBestGhProxy("", false)
-
-	if result.OK {
-		config.GlobalConfig.GithubProxy = result.ProxyUsed
-
-		if result.FromGroup {
-			cost := time.Duration(result.LatencyMS) * time.Millisecond
-			if cost.Milliseconds() < 1000 {
-				slog.Info("最佳GitHub代理", "URL", result.ProxyUsed,
-					"耗时", strconv.FormatInt(cost.Milliseconds(), 10)+"ms",
-					"速度", strconv.FormatFloat(result.SpeedKBps, 'f', 1, 64)+"KB/s",
+			config.Mutate(func(c *config.Config) { c.GithubProxy = best.proxy })
+			if best.cost.Milliseconds() < 1000 {
+				slog.Info("最佳GitHub代理", "URL", best.proxy,
+					"耗时", strconv.FormatInt(best.cost.Milliseconds(), 10)+"ms",
+					"速度", strconv.FormatFloat(best.speedKBps, 'f', 1, 64)+"KB/s",
 				)
 			} else {
-				slog.Info("最佳GitHub代理", "URL", result.ProxyUsed,
-					"耗时", strconv.FormatFloat(cost.Seconds(), 'f', 2, 64)+"s",
-					"速度", strconv.FormatFloat(result.SpeedKBps, 'f', 1, 64)+"KB/s",
+				slog.Info("最佳GitHub代理", "URL", best.proxy,
+					"耗时", strconv.FormatFloat(best.cost.Seconds(), 'f', 2, 64)+"s",
+					"速度", strconv.FormatFloat(best.speedKBps, 'f', 1, 64)+"KB/s",
 				)
 			}
-		} else {
-			slog.Debug("GitHub代理", "normalized", result.ProxyUsed)
-		}
 
-		IsGhProxyAvailable = true
-		return true
+			IsGhProxyAvailable = true
+			return true
+		}
 	}
 
 	slog.Debug("未找到可用的 GitHubProxy，将不使用 GitHubProxy")
@@ -391,7 +293,7 @@ func checkGhProxyAvailable(githubProxy string) (bool, string, float64) {
 	}
 
 	// 2. 判断并安全注入 Token
-	token := config.GlobalConfig.GithubToken
+	token := config.Get().GithubToken
 	if IsValidGitHubToken(token) {
 		InjectGitHubToken(req, token)
 	}
@@ -540,51 +442,4 @@ func findAvailableSysProxy(configProxy string, candidates []string) string {
 		return proxy
 	}
 	return ""
-}
-
-// CheckProxy 支持前端手动检测系统代理可用性，获取可用系统代理
-func CheckProxy(proxyAddr string) CheckProxyResult {
-	const timeout = 15 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// 空值 → 先看启动时是否已探测到，没有则现场探测一次
-	if proxyAddr == "" {
-		detected := config.GlobalConfig.SystemProxy
-
-		// 已探测到且非 direct，直接用
-		if detected != "" && !isDirectProxyConfig(detected) {
-			proxyAddr = detected
-		} else {
-			// 现场探测常见端口
-			found := findAvailableSysProxy("", commonProxies)
-			if found == "" {
-				return CheckProxyResult{
-					Error: "未检测到可用的系统代理，请确认代理程序正在运行",
-				}
-			}
-			proxyAddr = found
-		}
-	}
-
-	// direct → 前端已隐藏按钮，后端防御处理
-	if isDirectProxyConfig(proxyAddr) {
-		return CheckProxyResult{Error: "直连模式，无需代理检测"}
-	}
-
-	if _, err := url.Parse(proxyAddr); err != nil {
-		return CheckProxyResult{Error: "代理地址格式无效: " + err.Error()}
-	}
-
-	start := time.Now()
-	ok := isSysProxyAvailable(ctx, proxyAddr)
-	latency := time.Since(start).Milliseconds()
-
-	if ok {
-		return CheckProxyResult{OK: true, LatencyMS: latency, ProxyUsed: proxyAddr}
-	}
-	return CheckProxyResult{
-		ProxyUsed: proxyAddr,
-		Error:     fmt.Sprintf("代理不可用（%s）", proxyAddr),
-	}
 }

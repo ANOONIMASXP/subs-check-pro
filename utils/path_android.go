@@ -1,62 +1,28 @@
+// utils/path_android.go
 //go:build android
 
 package utils
 
 import (
-	"github.com/goccy/go-json"
-	"github.com/wailsapp/wails/v3/pkg/application"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
 
-type AppInfo struct {
-	Name     string `json:"name"`
-	Version  string `json:"version"`
-	Build    string `json:"build"`
-	BundleId string `json:"bundleId"`
-}
-
-func GetAppInfo() AppInfo {
-	raw := application.Mobile.AppInfoJSON()
-	var info AppInfo
-	_ = json.Unmarshal([]byte(raw), &info)
-	return info
-}
-
-// 内部私有存储：StoragePath()，失败时回退到 /data/data/<pkg>/files
+// GetPrivateStorageDir 返回内部存储目录。
+//
+// Android 下不再使用 App 沙盒（/data/data/<包名>/files），
+// 而是让 config、output 等目录与程序可执行文件同级生成。
 func GetPrivateStorageDir() string {
-	dir := application.Mobile.StoragePath()
-	if dir != "" {
-		if err := os.MkdirAll(dir, 0755); err == nil {
-			return dir
-		}
+	ex, err := os.Executable()
+	if err != nil {
+		slog.Error("获取程序路径失败", "error", err)
+		return "."
 	}
-
-	// 回退：Android 旧路径仍然有效
-	pkg := GetAppInfo().BundleId
-	if pkg != "" {
-		fallback := filepath.Join("/data/data", pkg, "files")
-		if err := os.MkdirAll(fallback, 0755); err == nil {
-			return fallback
-		}
-	}
-
-	// 最终兜底
-	return "."
+	return filepath.Dir(ex)
 }
 
-// 外部存储
+// GetExternalStorageDir 返回外部存储目录（Android CLI 场景与可执行文件同级）。
 func GetExternalStorageDir() string {
-	pkg := GetAppInfo().BundleId
-	if pkg == "" {
-		return GetPrivateStorageDir()
-	}
-
-	ext := filepath.Join("/storage/emulated/0/Android/data", pkg, "files")
-
-	if err := os.MkdirAll(ext, 0755); err == nil {
-		return ext
-	}
-
 	return GetPrivateStorageDir()
 }

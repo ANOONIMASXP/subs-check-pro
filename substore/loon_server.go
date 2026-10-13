@@ -10,15 +10,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/goccy/go-json"
-	"github.com/robfig/cron/v3"
+	"github.com/sinspired/subs-check-pro/v3/assets"
 	"github.com/sinspired/subs-check-pro/v3/config"
 )
 
@@ -26,7 +24,6 @@ import (
 // engine 用 atomic.Pointer 存放，支持资产更新后不重启进程即可热替换。
 type LoonServer struct {
 	engine      atomic.Pointer[LoonEngine]
-	frontendDir string
 	backendPath string
 	httpServer  *http.Server
 
@@ -45,10 +42,9 @@ type inflightCall struct {
 	err  error
 }
 
-func NewLoonServer(addr string, engine *LoonEngine, frontendDir, backendPath string) *LoonServer {
+func NewLoonServer(addr string, engine *LoonEngine, backendPath string) *LoonServer {
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 	s := &LoonServer{
-		frontendDir: frontendDir,
 		backendPath: backendPath,
 		baseCtx:     baseCtx,
 		baseCancel:  baseCancel,
@@ -59,11 +55,6 @@ func NewLoonServer(addr string, engine *LoonEngine, frontendDir, backendPath str
 	mux.HandleFunc("/", s.handle)
 	s.httpServer = &http.Server{Addr: addr, Handler: mux}
 	return s
-}
-
-// UpdateEngine 用新引擎原子替换旧引擎，旧引擎里尚未完成的请求继续用旧的执行
-func (s *LoonServer) UpdateEngine(e *LoonEngine) {
-	s.engine.Store(e)
 }
 
 func (s *LoonServer) handle(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +78,16 @@ func (s *LoonServer) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 本程序自带的后端图标：官方前端读取 SUB_STORE_BACKEND_CUSTOM_ICON（/scp/scp-app.svg），
+	// 本 fork 无本地前端，图标直接由该后端路由提供。
+	if r.URL.Path == "/scp/scp-app.svg" {
+		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(assets.EmbeddedScpAppLogo)
+		return
+	}
+
 	host := strings.Split(r.Host, ":")[0]
 	path := r.URL.Path
 
@@ -103,12 +104,12 @@ func (s *LoonServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if isBackend {
-		s.handleBackend(w, r)
+	if !isBackend {
+		http.NotFound(w, r)
 		return
 	}
 
-	s.handleFrontend(w, r)
+	s.handleBackend(w, r)
 }
 
 func (s *LoonServer) handleBackend(w http.ResponseWriter, r *http.Request) {
@@ -213,18 +214,7 @@ func (s *LoonServer) handleBackend(w http.ResponseWriter, r *http.Request) {
 				envMap["SUB_STORE_BACKEND_CUSTOM_ICON"] = "/scp/scp-app.svg"
 
 				// 注入配置变量
-				envMap["SUB_STORE_FRONTEND_BACKEND_PATH"] = config.GlobalConfig.SubStorePath
-				if config.GlobalConfig.SubStoreSyncCron != "" {
-					// 定时将订阅/文件上传到私有 Gist
-					envMap["SUB_STORE_BACKEND_SYNC_CRON"] = config.GlobalConfig.SubStoreSyncCron
-				}
-				if config.GlobalConfig.SubStoreProduceCron != "" {
-					// 后台定时处理订阅，用于脚本缓存；脚本参数必须开启缓存
-					envMap["SUB_STORE_PRODUCE_CRON"] = config.GlobalConfig.SubStoreProduceCron
-				}
-				if config.GlobalConfig.SubStorePushService != "" {
-					envMap["SUB_STORE_PUSH_SERVICE"] = config.GlobalConfig.SubStorePushService
-				}
+				envMap["SUB_STORE_FRONTEND_BACKEND_PATH"] = config.Get().SubStorePath
 				envMap["SUB_STORE_BODY_JSON_LIMIT"] = "30mb"
 				envMap["SUB_STORE_CORS_ALLOWED_ORIGINS"] = "*"
 
@@ -249,49 +239,6 @@ func (s *LoonServer) handleBackend(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(resp.Body))
 }
 
-func (s *LoonServer) handleFrontend(w http.ResponseWriter, r *http.Request) {
-	root, err := filepath.Abs(s.frontendDir)
-	if err != nil {
-		http.Error(w, "前端资源目录不可用", http.StatusInternalServerError)
-		return
-	}
-
-	rel := strings.TrimPrefix(r.URL.Path, "/")
-	requested := filepath.Join(root, filepath.FromSlash(rel))
-	absRequested, err := filepath.Abs(requested)
-	if err != nil || !strings.HasPrefix(absRequested, root) {
-		http.Error(w, "非法路径", http.StatusForbidden)
-		return
-	}
-
-	// 拦截逻辑：防止逃逸到官方前端，非法路径强行打回 /
-	stat, err := os.Stat(absRequested)
-	if os.IsNotExist(err) || (err == nil && stat.IsDir()) {
-		ext := filepath.Ext(absRequested)
-		// 如果是请求具体资源类型文件且找不到，直接返回 404
-		if ext != "" && ext != ".html" {
-			w.Header().Set("Cache-Control", "no-store")
-			http.NotFound(w, r)
-			return
-		}
-		// SPA 路由请求，如 /sub/edit，返回 index.html 交由前端接管
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
-		http.ServeFile(w, r, filepath.Join(root, "index.html"))
-		return
-	}
-
-	// 补救 Windows 环境偶尔返回 text/plain 的问题
-	switch filepath.Ext(absRequested) {
-	case ".js":
-		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	case ".css":
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	}
-
-	http.ServeFile(w, r, absRequested)
-}
-
 func (s *LoonServer) Start() error {
 	ln, err := net.Listen("tcp", s.httpServer.Addr)
 	if err != nil {
@@ -303,7 +250,7 @@ func (s *LoonServer) Start() error {
 		}
 	}()
 
-	// 启动探活
+	// 自己给自己发个 OPTIONS 请求，收到回复才算真正的完全启动
 	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
 	if ok {
 		client := &http.Client{Timeout: 100 * time.Millisecond}
@@ -367,186 +314,5 @@ func (s *LoonServer) executeDetached(clientCtx context.Context, key string, req 
 		return call.resp, call.err
 	case <-clientCtx.Done():
 		return nil, clientCtx.Err()
-	}
-}
-
-// cronHTTPClient 供内置定时任务回调本机 Sub-Store 服务使用：
-//   - 不跟随重定向：内部任务只应访问本机服务，任何 30x 都不该把请求带到外网；
-//   - 不走系统代理：目标始终是 127.0.0.1；
-//   - 设置总超时，避免任务永久挂起。
-var cronHTTPClient = &http.Client{
-	Timeout: 10 * time.Minute,
-	Transport: func() *http.Transport {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		t.Proxy = nil
-		return t
-	}(),
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
-
-// callLocalSubStore 请求本机 Sub-Store 接口，并按状态码判断成败。
-func callLocalSubStore(task, target string) {
-	req, err := http.NewRequest("GET", target, nil)
-	if err != nil {
-		slog.Error("构建定时任务请求失败", "err", err)
-		return
-	}
-	// 伪装浏览器请求头，防止 Sub-Store 内层某些库验证拦截抛出 500
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Subs-Check-Pro-Cron/1.0")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-
-	resp, err := cronHTTPClient.Do(req)
-	if err != nil {
-		slog.Error("❌ 定时任务网络请求失败", "task", task, "err", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32<<20))
-
-	type ErrorResp struct {
-		Status string `json:"status"`
-		Error  struct {
-			Code    string `json:"code"`
-			Type    string `json:"type"`
-			Message string `json:"message"`
-			Details string `json:"details"`
-		} `json:"error"`
-	}
-
-	if resp.StatusCode >= 300 {
-		var errResp ErrorResp
-
-		if err := json.Unmarshal(snippet, &errResp); err == nil {
-			details := strings.TrimSpace(errResp.Error.Details)
-
-			// 去掉 Reason:
-			details = strings.TrimPrefix(details, "Reason:")
-
-			// 去掉首尾 [] 和空格
-			details = strings.Trim(details, " []")
-
-			slog.Error(
-				"Sub-Store 定时任务执行失败",
-				"任务", task,
-				"结果", details,
-			)
-		}
-
-		return
-	}
-	slog.Debug("定时任务执行成功", "task", task)
-}
-
-// StartSubStoreCronJobs 解析配置并启动定时任务
-// 返回 *cron.Cron 以便在外层通过 defer 优雅关闭
-func StartSubStoreCronJobs(serverPort string, backendPath string) *cron.Cron {
-	// 避免慢订阅导致重叠执行，阻塞 JS 引擎
-	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DiscardLogger)))
-
-	apiBase := fmt.Sprintf("http://127.0.0.1:%s%s", serverPort, backendPath)
-	hasTask := false
-
-	// 1. 同步 Gist 任务: sub-store-sync-cron
-	// 定时将订阅/文件上传到私有 Gist
-	syncCron := strings.TrimSpace(config.GlobalConfig.SubStoreSyncCron)
-	if syncCron != "" {
-		_, err := c.AddFunc(syncCron, func() {
-			slog.Debug("触发定时: 同步 Gist")
-			callLocalSubStore("Gist同步", apiBase+"/api/sync/artifacts")
-		})
-
-		if err == nil {
-			hasTask = true
-		} else {
-			slog.Error("解析 Sync Cron 配置失败", "err", err, "expr", syncCron)
-		}
-	}
-
-	// 2. 更新订阅任务: sub-store-produce-cron
-	// 后台定时处理订阅，用于脚本缓存；脚本参数必须开启缓存
-	produceCronStr := strings.TrimSpace(config.GlobalConfig.SubStoreProduceCron)
-	if produceCronStr != "" {
-		tasks := strings.SplitSeq(produceCronStr, ";")
-		for taskStr := range tasks {
-			taskStr = strings.TrimSpace(taskStr)
-			if taskStr == "" {
-				continue
-			}
-
-			parts := strings.Split(taskStr, ",")
-			if len(parts) < 3 {
-				slog.Error("Sub-Store Produce Cron 配置格式错误(参数不足)", "task", taskStr)
-				continue
-			}
-
-			var cronExpr, typ, namesStr string
-			// 倒序查找 sub 或 col：完美解决 cron 表达式带逗号，以及后面逗号分隔配置多订阅名的问题
-			for i := 1; i < len(parts)-1; i++ {
-				t := strings.TrimSpace(parts[i])
-				if t == "sub" || t == "col" {
-					cronExpr = strings.TrimSpace(strings.Join(parts[:i], ","))
-					typ = t
-					namesStr = strings.TrimSpace(strings.Join(parts[i+1:], ","))
-					break
-				}
-			}
-
-			if typ == "" {
-				slog.Error("Sub-Store Produce Cron 配置格式错误(未找到 sub 或 col 类型标识)", "task", taskStr)
-				continue
-			}
-
-			names := strings.SplitSeq(namesStr, ",")
-			for name := range names {
-				name = strings.TrimSpace(name)
-				if name == "" {
-					continue
-				}
-
-				n := name
-				t := typ
-				_, err := c.AddFunc(cronExpr, func() {
-					slog.Debug("触发定时: 缓存订阅", "type", t, "name", n)
-					targetURL := apiBase + "/download/" + url.PathEscape(n)
-					if t == "col" {
-						targetURL = apiBase + "/download/collection/" + url.PathEscape(n)
-					}
-					callLocalSubStore("缓存订阅"+"「"+n+"」", targetURL)
-				})
-				if err != nil {
-					slog.Error("解析 Produce Cron 配置失败", "err", err, "expr", cronExpr, "name", n)
-				} else {
-					hasTask = true
-				}
-			}
-		}
-	}
-
-	if hasTask {
-		c.Start()
-		slog.Info("Sub-Store 定时任务", "Gist同步", syncCron, "订阅缓存", produceCronStr)
-		return c
-	}
-
-	return nil
-}
-
-// ReloadSubStoreCronJobs 热重载 Sub-Store 定时任务，无需重启 HTTP 服务
-func ReloadSubStoreCronJobs() {
-	// 如果服务未运行，则直接跳过（下次启动时会自动读取最新配置）
-	if !IsSubStoreRunning.Load() {
-		return
-	}
-
-	if oldCron := currentSubStoreCron.Swap(nil); oldCron != nil {
-		oldCron.Stop()
-	}
-
-	subPortOnly := strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":")
-	newCron := StartSubStoreCronJobs(subPortOnly, InitSubStorePath)
-	if newCron != nil {
-		currentSubStoreCron.Store(newCron)
 	}
 }

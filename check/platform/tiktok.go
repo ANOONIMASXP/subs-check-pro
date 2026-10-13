@@ -1,13 +1,17 @@
 package platform
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"regexp"
 )
 
-func CheckTikTok(httpClient *http.Client) (string, error) {
-	req, err := http.NewRequest("GET", "https://www.tiktok.com/", nil)
+// reTikTokRegion 匹配 "region":"XX"（每节点请求都要用，包级预编译）
+var reTikTokRegion = regexp.MustCompile(`"region"\s*:\s*"([A-Z]{2})"`)
+
+func CheckTikTok(ctx context.Context, httpClient *http.Client) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://www.tiktok.com/", nil)
 	if err != nil {
 		return "", err
 	}
@@ -30,8 +34,7 @@ func CheckTikTok(httpClient *http.Client) (string, error) {
 	}
 
 	// 使用正则匹配 "region":"XX"
-	re := regexp.MustCompile(`"region"\s*:\s*"([A-Z]{2})"`)
-	matches := re.FindSubmatch(body)
+	matches := reTikTokRegion.FindSubmatch(body)
 	if len(matches) >= 2 {
 		return string(matches[1]), nil
 	}

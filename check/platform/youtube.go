@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"regexp"
@@ -27,9 +28,9 @@ var cnSignals = []string{
 //   - "CN"   → CN IP，YouTube 不可用
 //   - "BLOCKED" → 可访问但 Premium 明确不支持该地区
 //   - ""     → 不可达或无法解析地区
-func CheckYoutube(httpClient *http.Client) (string, error) {
+func CheckYoutube(ctx context.Context, httpClient *http.Client) (string, error) {
 	// 创建请求
-	req, err := http.NewRequest("GET", "https://www.youtube.com/premium", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://www.youtube.com/premium", nil)
 	if err != nil {
 		return "", err
 	}

@@ -4,22 +4,19 @@ package substore
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/robfig/cron/v3"
 	"github.com/sinspired/subs-check-pro/v3/assets"
 	"github.com/sinspired/subs-check-pro/v3/config"
 	"github.com/sinspired/subs-check-pro/v3/save/method"
@@ -27,43 +24,69 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-var InitSubStorePath = ""
+// initSubStorePath 存引擎实际生效的后端路径前缀。
+// 写方：引擎启动 goroutine（resolveBackendPath）；读方：app 配置热重载 goroutine
+// （onConfigChange）→ 必须原子访问。
+var initSubStorePath atomic.Pointer[string]
+
+// GetInitSubStorePath 返回引擎已解析的后端路径前缀；从未启动过时返回空串。
+func GetInitSubStorePath() string {
+	if p := initSubStorePath.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func setInitSubStorePath(p string) {
+	initSubStorePath.Store(&p)
+}
+
+// 当前 RunSubStoreService 实例的生命周期句柄。
+// 每个实例独享子 ctx + done：Stop/ReStart 通过 cancel 收敛旧实例并等待其
+// 真正退出（startSubStore 的 defer 会关日志句柄、释放端口），替代旧的
+// 固定 sleep + 在同一 app ctx 上无限叠加 goroutine 的做法（每次配置变更
+// 泄漏一个 parked goroutine 和一个打开的 lumberjack 文件句柄）。
+var (
+	serviceMu     sync.Mutex
+	serviceCancel context.CancelFunc
+	serviceDone   chan struct{}
+)
+
+// stopCurrentService 收敛当前实例（如存在）并等待其完全退出。
+// 返回 false 表示等待超时（调用方可记录告警）。
+func stopCurrentService(wait time.Duration) bool {
+	serviceMu.Lock()
+	cancel := serviceCancel
+	done := serviceDone
+	serviceMu.Unlock()
+
+	if cancel == nil {
+		return true
+	}
+	cancel()
+
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(wait):
+		return false
+	}
+}
+
 var IsSubStoreRunning atomic.Bool
 
 // currentLoonServer 持有当前运行中的 Loon 模拟服务
 var currentLoonServer atomic.Pointer[LoonServer]
 
-// 以下三个用于支撑 ReloadSubStoreEngine：资产更新后不重启进程也能让新脚本生效。
-var currentSubStorePaths atomic.Pointer[subStorePaths]
-var currentLoonStore atomic.Pointer[LoonKVStore]
-
-// currentSubLogger 持有当前运行中的 Sub-Store 日志拦截器
-var currentSubLogger atomic.Pointer[slog.Logger]
-
-// currentSubStoreCron 持有当前运行中的 Sub-Store 定时同步任务引擎
-var currentSubStoreCron atomic.Pointer[cron.Cron]
-
 type subStorePaths struct {
-	substoreDir                       string
-	jsPath                            string
-	backendVerPath                    string
-	frontDir                          string
-	subsCheckProLogoPath              string
-	scpAppLogoPath                    string
-	singBoxLogoPath                   string
-	shadowrocketConfigPath            string
-	overYamlACL4SSRPath               string
-	overYamlSinspiredRulesCDNPath     string
-	overYamlSinspiredRulesLiteCDNPath string
-	kvStorePath                       string
-	logPath                           string
-}
-
-// embeddedAsset 定义用于循环写入文本资源的结构体
-type embeddedAsset struct {
-	data []byte
-	path string
-	desc string
+	substoreDir    string
+	jsPath         string
+	backendVerPath string
+	kvStorePath    string
+	logPath        string
 }
 
 func parseVersion(v string) *semver.Version {
@@ -82,23 +105,13 @@ func getSubStorePaths() (*subStorePaths, error) {
 	}
 
 	substoreDir := filepath.Join(saver.OutputPath, "sub-store")
-	substoreSCPDir := filepath.Join(substoreDir, "frontend", "scp")
 
 	return &subStorePaths{
-		substoreDir:                       substoreDir,
-		jsPath:                            filepath.Join(substoreDir, "sub-store.min.js"),
-		backendVerPath:                    filepath.Join(substoreDir, "backend.version"),
-		frontDir:                          filepath.Join(substoreDir, "frontend"),
-		shadowrocketConfigPath:            filepath.Join(saver.OutputPath, "Shadowrocket-Rules-CDN.conf"),
-		overYamlACL4SSRPath:               filepath.Join(saver.OutputPath, "ACL4SSR_Online_Full.yaml"),
-		overYamlSinspiredRulesCDNPath:     filepath.Join(saver.OutputPath, "Mihomo-Rules-CDN.yaml"),
-		overYamlSinspiredRulesLiteCDNPath: filepath.Join(saver.OutputPath, "Mihomo-Rules-Lite-CDN.yaml"),
-		subsCheckProLogoPath:              filepath.Join(substoreSCPDir, "subs-check-pro.svg"),
-		scpAppLogoPath:                    filepath.Join(substoreSCPDir, "scp-app.svg"),
-		singBoxLogoPath:                   filepath.Join(substoreSCPDir, "sing-box.svg"),
-
-		kvStorePath: filepath.Join(substoreDir, "sub-store.json"),
-		logPath:     filepath.Join(substoreDir, "sub-store.log"),
+		substoreDir:    substoreDir,
+		jsPath:         filepath.Join(substoreDir, "sub-store.min.js"),
+		backendVerPath: filepath.Join(substoreDir, "backend.version"),
+		kvStorePath:    filepath.Join(substoreDir, "sub-store.json"),
+		logPath:        filepath.Join(substoreDir, "sub-store.log"),
 	}, nil
 }
 
@@ -190,8 +203,8 @@ func logStop(port string) {
 
 // RunSubStoreService 运行 Sub-Store 服务（Loon API 模拟方案，无 Node 依赖），支持 ctx，可被外部取消
 func RunSubStoreService(ctx context.Context) {
-	listenPort := strings.TrimPrefix(config.GlobalConfig.ListenPort, ":")
-	subStorePort := strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":")
+	listenPort := strings.TrimPrefix(config.Get().ListenPort, ":")
+	subStorePort := strings.TrimPrefix(config.Get().SubStorePort, ":")
 
 	if subStorePort == "" {
 		IsSubStoreRunning.Store(false)
@@ -209,6 +222,32 @@ func RunSubStoreService(ctx context.Context) {
 		return
 	}
 
+	// 实例独享子 ctx：父 ctx（app 生命周期）或 stopCurrentService 都能收敛它
+	instanceCtx, instanceCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	// 防御性接管：调用方理应先 Stop，若仍有旧实例在跑则先等它退出，
+	// 避免两个实例同时抢同一端口/日志文件
+	if !stopCurrentService(10 * time.Second) {
+		slog.Warn("旧 Sub-Store 实例退出超时，强制接管")
+	}
+
+	serviceMu.Lock()
+	serviceCancel = instanceCancel
+	serviceDone = done
+	serviceMu.Unlock()
+
+	defer func() {
+		instanceCancel()
+		close(done)
+		serviceMu.Lock()
+		if serviceDone == done {
+			serviceCancel = nil
+			serviceDone = nil
+		}
+		serviceMu.Unlock()
+	}()
+
 	for {
 		func() {
 			defer func() {
@@ -217,15 +256,15 @@ func RunSubStoreService(ctx context.Context) {
 						"panic", r, "stack", string(debug.Stack()))
 				}
 			}()
-			if err := startSubStore(ctx); err != nil {
+			if err := startSubStore(instanceCtx); err != nil {
 				slog.Error("Sub-Store 服务崩溃, 正在重启...", "error", err)
 				IsSubStoreRunning.Store(false)
 			}
 		}()
 
 		select {
-		case <-ctx.Done():
-			logStop(strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":"))
+		case <-instanceCtx.Done():
+			logStop(strings.TrimPrefix(config.Get().SubStorePort, ":"))
 			IsSubStoreRunning.Store(false)
 			return
 		case <-time.After(3 * time.Second):
@@ -246,7 +285,7 @@ func startSubStore(ctx context.Context) error {
 	// 移除旧规则文件
 	removeOldSinspiredFiles()
 
-	// 释放 Sub-Store 相关资源（脚本 / 前端 / 覆写 yaml，均为文本资源，直接写出）
+	// 释放 Sub-Store 相关资源（后端脚本等文本资源，直接写出）
 	if err := extractAssets(paths); err != nil {
 		return err
 	}
@@ -265,15 +304,6 @@ func startSubStore(ctx context.Context) error {
 	subLogger, logCloser := newSubStoreLogger(paths.logPath)
 	defer logCloser.Close()
 
-	currentSubStorePaths.Store(paths)
-	currentLoonStore.Store(store)
-	currentSubLogger.Store(subLogger)
-	defer func() {
-		currentSubStorePaths.Store(nil)
-		currentLoonStore.Store(nil)
-		currentSubLogger.Store(nil)
-	}()
-
 	// 单一未拆分脚本，不再需要 Simple/Core 两套引擎；
 	// NewLoonEngine 内部会同步完成 worker 池预热，见 loon_engine.go。
 	engine, err := NewLoonEngine(scriptSrc, "Sub-Store", store, subLogger)
@@ -283,17 +313,9 @@ func startSubStore(ctx context.Context) error {
 
 	backendPath := resolveBackendPath()
 
-	// 检查 MihomoOverwriteUrl 是否为本地地址：$httpClient 直接使用 net/http 直连，
-	// 不经过系统代理环境变量，这里仅保留探测/日志，方便后续如需要接自定义 Transport 时复用。
-	if overwriteURL := config.GlobalConfig.MihomoOverwriteURL; overwriteURL != "" {
-		if _, err := url.Parse(overwriteURL); err == nil && utils.IsLocalURL(overwriteURL) {
-			slog.Debug("MihomoOverwriteUrl 是本地地址", "url", overwriteURL)
-		}
-	}
+	listenAddr := ":" + strings.TrimPrefix(config.Get().SubStorePort, ":")
 
-	listenAddr := ":" + strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":")
-
-	server := NewLoonServer(listenAddr, engine, paths.frontDir, backendPath)
+	server := NewLoonServer(listenAddr, engine, backendPath)
 
 	// 这里调用 Start() 时，内部会进行端口绑定和 HTTP 探活
 	if err := server.Start(); err != nil {
@@ -306,21 +328,7 @@ func startSubStore(ctx context.Context) error {
 
 	IsSubStoreRunning.Store(true)
 
-	slog.Info("Sub-Store 服务启动", "port", strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":"), "path", backendPath)
-	slog.Info("Sub-Store 面板地址", "url", fmt.Sprintf("http://localhost:%s/subs?api=%s", strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":"), backendPath))
-
-	// 启动 Sub-Store 原生定时任务引擎
-	subPortOnly := strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":")
-	cronEngine := StartSubStoreCronJobs(subPortOnly, backendPath)
-	if cronEngine != nil {
-		currentSubStoreCron.Store(cronEngine)
-	}
-	defer func() {
-		// 确保服务崩溃或停止时，清理对应的定时任务
-		if c := currentSubStoreCron.Swap(nil); c != nil {
-			c.Stop()
-		}
-	}()
+	slog.Info("Sub-Store 服务启动", "port", strings.TrimPrefix(config.Get().SubStorePort, ":"), "path", backendPath)
 
 	<-ctx.Done()
 
@@ -332,18 +340,20 @@ func startSubStore(ctx context.Context) error {
 
 // resolveBackendPath 生成/复用后端 API 路径前缀，行为与旧版 SUB_STORE_FRONTEND_BACKEND_PATH 一致
 func resolveBackendPath() string {
-	InitSubStorePath = strings.TrimSpace(config.GlobalConfig.SubStorePath)
-	if InitSubStorePath != "" {
-		if !strings.HasPrefix(InitSubStorePath, "/") {
-			InitSubStorePath = "/" + InitSubStorePath
-			config.GlobalConfig.SubStorePath = InitSubStorePath
+	p := strings.TrimSpace(config.Get().SubStorePath)
+	if p != "" {
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+			// copy-on-write 回写，供 BaseURL 推导与热重载比对
+			config.Mutate(func(c *config.Config) { c.SubStorePath = p })
 		}
 	} else {
-		InitSubStorePath = "/" + utils.GenerateRandomString(20)
-		config.GlobalConfig.SubStorePath = InitSubStorePath
-		slog.Info("已随机生成", "sub-store-path", InitSubStorePath)
+		p = "/" + utils.GenerateRandomString(20)
+		config.Mutate(func(c *config.Config) { c.SubStorePath = p })
+		slog.Info("已随机生成", "sub-store-path", p)
 	}
-	return InitSubStorePath
+	setInitSubStorePath(p)
+	return p
 }
 
 // writeEmbeddedFile 将嵌入的原始（未压缩）内容直接写入目标文件
@@ -355,32 +365,6 @@ func writeEmbeddedFile(data []byte, targetPath string, perm os.FileMode, desc st
 		return fmt.Errorf("写入 %s 失败: %w", desc, err)
 	}
 	return nil
-}
-
-// extractFrontendFS 将嵌入的前端资源目录解压到目标目录
-func extractFrontendFS(frontendFS embed.FS, targetDir string) error {
-	const rootDir = "frontend"
-	return fs.WalkDir(frontendFS, rootDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel := strings.TrimPrefix(strings.TrimPrefix(path, rootDir), "/")
-		if rel == "" {
-			return os.MkdirAll(targetDir, 0o755)
-		}
-
-		target := filepath.Join(targetDir, filepath.FromSlash(rel))
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-
-		data, err := frontendFS.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		_ = os.MkdirAll(filepath.Dir(target), 0o755)
-		return os.WriteFile(target, data, 0o644)
-	})
 }
 
 // extractAssets 将嵌入资源释放到磁盘。
@@ -415,49 +399,6 @@ func extractAssets(paths *subStorePaths) error {
 		}
 	}
 
-	// 2. 前端资源
-	// 读取内嵌的前端版本与本地版本
-	embedFVerBytes, _ := assets.EmbeddedSubStoreFrontend.ReadFile("frontend/frontend.version")
-	embedFVer := parseVersion(string(embedFVerBytes))
-	localFVerBytes, _ := os.ReadFile(filepath.Join(paths.frontDir, "frontend.version"))
-	localFVer := parseVersion(string(localFVerBytes))
-
-	// 判断是否需要覆盖前端，多加一层 index.html 存在性校验，防止目录在但内容丢失
-	_, frontStatErr := os.Stat(filepath.Join(paths.frontDir, "index.html"))
-	shouldOverwriteFrontend := os.IsNotExist(frontStatErr) || localFVer == nil || (embedFVer != nil && embedFVer.GreaterThan(localFVer))
-
-	if shouldOverwriteFrontend {
-		_ = os.RemoveAll(paths.frontDir)
-		if err := extractFrontendFS(assets.EmbeddedSubStoreFrontend, paths.frontDir); err != nil {
-			return fmt.Errorf("解压前端资源失败: %w", err)
-		}
-		if embedFVer != nil {
-			updatedLogs = append(updatedLogs, "前端", embedFVer.String())
-		} else {
-			updatedLogs = append(updatedLogs, "Sub-Store 前端", "已写入")
-		}
-	}
-
-	// 3. 其它静态文本资源（Logo、配置模板等）
-	assetsList := []embeddedAsset{
-		{assets.EmbeddedSubsCheckProLogo, paths.subsCheckProLogoPath, "subs-check-pro svg logo"},
-		{assets.EmbeddedScpAppLogo, paths.scpAppLogoPath, "scp-app logo"},
-		{assets.EmbeddedSingBoxLogo, paths.singBoxLogoPath, "sing-box svg logo"},
-		{assets.EmbeddedShadowrocketConfig, paths.shadowrocketConfigPath, "Shadowrocket 配置文件"},
-		{assets.EmbeddedOverrideYamlACL4SSR, paths.overYamlACL4SSRPath, "ACL4SSR 配置文件"},
-		{assets.EmbeddedOverrideYamlSinspiredRulesCDN, paths.overYamlSinspiredRulesCDNPath, "Sinspired CDN 配置"},
-		{assets.EmbeddedOverrideYamlSinspiredRulesLiteCDN, paths.overYamlSinspiredRulesLiteCDNPath, "Sinspired Lite CDN 配置"},
-	}
-	for _, asset := range assetsList {
-		// 【优化】只有在文件不存在，或文件大小不同时才重新写入，避免每次启动都有无意义的磁盘 I/O 磨损
-		if info, err := os.Stat(asset.path); err == nil && info.Size() == int64(len(asset.data)) {
-			continue
-		}
-		if err := writeEmbeddedFile(asset.data, asset.path, 0o644, asset.desc); err != nil {
-			return err
-		}
-	}
-
 	// 输出聚合日志
 	if len(updatedLogs) > 0 {
 		slog.Info("Sub-Store 资源更新", updatedLogs...)
@@ -465,56 +406,36 @@ func extractAssets(paths *subStorePaths) error {
 	return nil
 }
 
-// ReloadSubStoreEngine 用磁盘上最新的 sub-store.min.js 重新构建一个 LoonEngine，
-// 并原子替换到当前运行中的 LoonServer 上——不需要重启进程。
-// 由 UpdateSubStoreAssets 在后端脚本更新成功后调用；服务未运行时直接跳过，
-// 下次启动会自然读取磁盘上的最新脚本。
-func ReloadSubStoreEngine() error {
-	server := currentLoonServer.Load()
-	if server == nil {
+// StopSubStore 优雅关闭当前运行中的 Sub-Store 内置 HTTP 服务。
+// 通过实例 ctx 触发退出并等待实例完全结束：startSubStore 在 <-ctx.Done()
+// 后执行 server.Shutdown(5s)，随后 defer 关闭日志句柄、清空 currentLoonServer，
+// 最外层 defer 关闭 done —— 等到 done 即可确定端口与文件句柄已释放。
+func StopSubStore() error {
+	serviceMu.Lock()
+	existed := serviceCancel != nil
+	serviceMu.Unlock()
+
+	if !existed {
+		IsSubStoreRunning.Store(false)
 		return nil
 	}
-	paths := currentSubStorePaths.Load()
-	store := currentLoonStore.Load()
-	logger := currentSubLogger.Load()
-	if paths == nil || store == nil || logger == nil {
-		return fmt.Errorf("Sub-Store 运行时状态不完整，无法热重载引擎")
-	}
 
-	scriptSrc, err := os.ReadFile(paths.jsPath)
-	if err != nil {
-		return fmt.Errorf("读取 Sub-Store 脚本失败: %w", err)
+	if !stopCurrentService(10 * time.Second) {
+		IsSubStoreRunning.Store(false)
+		return fmt.Errorf("Sub-Store 实例退出等待超时（10s）")
 	}
-	newEngine, err := NewLoonEngine(scriptSrc, "Sub-Store", store, logger)
-	if err != nil {
-		return fmt.Errorf("构建新 Sub-Store 引擎失败: %w", err)
-	}
-	server.UpdateEngine(newEngine)
-	slog.Info("Sub-Store 后端 已成功热重载并应用新版本")
-	return nil
-}
-
-// StopSubStore 优雅关闭当前运行中的 Sub-Store 内置 HTTP 服务
-func StopSubStore() error {
-	if s := currentLoonServer.Load(); s != nil {
-		// 给服务 3 秒钟的时间处理完现有的请求，然后强制关闭
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := s.Shutdown(ctx); err != nil {
-			return err
-		}
-		slog.Info("Sub-Store 服务 已停止")
-	}
+	slog.Info("Sub-Store 服务 已停止")
 	IsSubStoreRunning.Store(false)
 	return nil
 }
 
-// ReStartSubStore 重启 Sub-Store 服务
+// ReStartSubStore 重启 Sub-Store 服务。
+// StopSubStore 已确定性等待旧实例退出（端口、日志句柄均已释放），
+// 不再需要固定 sleep——旧实现 500ms 常常不够，还会叠加 goroutine/句柄泄漏。
 func ReStartSubStore(ctx context.Context) error {
 	if err := StopSubStore(); err != nil {
 		return err
 	}
-	time.Sleep(500 * time.Millisecond)
 	go RunSubStoreService(ctx)
 
 	return nil
@@ -547,7 +468,6 @@ func removeOldSinspiredFiles() {
 		oldFiles := []string{
 			"Sinspired_Rules_CDN.yaml",
 			"Sinspired_Rules_Lite_CDN.yaml",
-			"Sinspired_Rules_shadowrocket-cdn.conf",
 		}
 		for _, f := range oldFiles {
 			path := filepath.Join(saver.OutputPath, f)

@@ -1,4 +1,3 @@
-//go:generate go-winres make --in winres/winres.json --product-version=git-tag --file-version=git-tag --arch=amd64,386,arm64
 package main
 
 import (
@@ -20,11 +19,8 @@ func main() {
 	flag.Parse()
 
 	// 初始化应用
-	fullVersion := Version + "-" + CurrentCommit
-	application := app.New(Version, fullVersion, *flagConfigPath)
-	// 版本更新成功通知
-	application.InitUpdateInfo()
-	slog.Info("当前版本", "Version", fullVersion)
+	application := app.New(*flagConfigPath)
+	slog.Info("当前版本", "Version", Version)
 
 	if err := application.Initialize(); err != nil {
 		if errors.Is(err, app.ErrFirstRun) {

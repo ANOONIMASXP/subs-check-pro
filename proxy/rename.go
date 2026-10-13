@@ -16,7 +16,7 @@ func Rename(name, countryCodeTag string) string {
 	flag := CountryCodeToFlag(name)
 
 	key, label := name, name
-	if config.GlobalConfig.EnhancedTag {
+	if config.Get().EnhancedTag {
 		if countryCodeTag != "" {
 			key, label = countryCodeTag, countryCodeTag
 		} else if name != "" {
@@ -43,14 +43,19 @@ func ResetRenameCounter() {
 }
 
 func CountryCodeToFlag(code string) string {
-	if len(code) != 2 {
+	// 按 rune 计长：旧实现按字节判长，"é"（2 字节 1 rune）会通过检查，
+	// 随后 []rune(code)[1] 越界 panic 整个改名阶段
+	rs := []rune(code)
+	if len(rs) != 2 {
 		return "🏴‍☠"
 	}
 
-	code = string([]rune(code)[0]&^0x20) + string([]rune(code)[1]&^0x20) // 转成大写（ASCII 位运算）
+	// 转成大写（ASCII 位运算）
+	upper0 := rs[0] &^ 0x20
+	upper1 := rs[1] &^ 0x20
 
-	r1 := rune(code[0]-'A') + 0x1F1E6
-	r2 := rune(code[1]-'A') + 0x1F1E6
+	r1 := upper0 - 'A' + 0x1F1E6
+	r2 := upper1 - 'A' + 0x1F1E6
 
 	return string([]rune{r1, r2})
 }

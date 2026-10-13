@@ -1,16 +1,10 @@
 package parse
 
 import (
-	"net/url"
 	"strings"
 
 	"github.com/sinspired/subs-check-pro/v3/utils"
 )
-
-func SsLocalRequest(u *url.URL) bool {
-	return utils.IsLocalURL(u.Hostname()) &&
-		(strings.Contains(u.Fragment, "Keep") || strings.Contains(u.Path, "history") || strings.Contains(u.Path, "all"))
-}
 
 func EnsureScheme(s string) string {
 	s = strings.TrimSpace(s)

@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"net/http"
 	"testing"
 )
@@ -8,7 +9,7 @@ import (
 func TestCheckGemini(t *testing.T) {
 	client := &http.Client{}
 
-	status, err := CheckGemini(client)
+	status, err := CheckGemini(context.Background(), client)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,7 +54,7 @@ func TestCheckCopilot_Success(t *testing.T) {
 	// 使用默认 http.Client
 	client := &http.Client{}
 
-	Copilot, CopilotAPI, err := CheckCopilot(client)
+	Copilot, CopilotAPI, err := CheckCopilot(context.Background(), client)
 
 	if err != nil {
 		t.Fatal(err)

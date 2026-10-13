@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptrace"
-	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -21,8 +20,6 @@ import (
 
 	"github.com/buke/quickjs-go"
 	"github.com/goccy/go-json"
-	"github.com/sinspired/subs-check-pro/v3/config"
-	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
 type LoonHTTPRequest struct {
@@ -223,67 +220,6 @@ func (e *LoonEngine) Execute(execCtx context.Context, req *LoonHTTPRequest, argu
 				subtitle := args[1].String()
 				content := args[2].String()
 				e.logger.Info("🔔 [通知] "+title, "subtitle", subtitle, "content", content)
-
-				// 接管推送逻辑
-				pushConfig := config.GlobalConfig.SubStorePushService
-				if pushConfig != "" {
-					go func(cfg, t, st, c string) {
-						// 拼接副标题和内容
-						pushMsg := c
-						if st != "" {
-							pushMsg = st + "  \n" + c
-						}
-
-						// 1. 兼容原版 GET 替换模式 (如: https://api.day.app/XXX/[推送标题]/[推送内容])
-						if strings.Contains(cfg, "[推送内容]") {
-							finalURL := strings.Replace(cfg, "[推送标题]", url.PathEscape(t), 1)
-							finalURL = strings.Replace(finalURL, "[推送内容]", url.PathEscape(pushMsg), 1)
-							pushCtx, pushCancel := context.WithTimeout(context.Background(), 15*time.Second)
-							defer pushCancel()
-							pushReq, err := http.NewRequestWithContext(pushCtx, http.MethodGet, finalURL, nil)
-							if err == nil {
-								var resp *http.Response
-								if resp, err = e.httpClient.Do(pushReq); err == nil {
-									_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-									resp.Body.Close()
-								}
-							}
-							if err != nil {
-								e.logger.Warn("Sub-Store HTTP 推送失败", "err", err)
-							}
-							return
-						}
-
-						// 2. Apprise 模式
-						var targetURLs string
-						if strings.ToLower(strings.TrimSpace(cfg)) == "apprise" {
-							// 填了 "apprise"，直接复用主程序中配好的接收渠道
-							targetURLs = strings.Join(config.GlobalConfig.RecipientURL, ",")
-						} else {
-							// 填了单独的 Apprise URI (如 bark://xxx, tgram://xxx)
-							targetURLs = cfg
-						}
-
-						if targetURLs == "" {
-							return
-						}
-
-						// 组装 Apprise 请求并交由 utils 处理
-						req := utils.NotifyRequest{
-							URLs:   targetURLs,
-							Body:   pushMsg,
-							Title:  t,
-							Format: "markdown",
-						}
-
-						// 直接调用 Notify 模块
-						if err := utils.Notify(req, ""); err != nil {
-							e.logger.Warn("Sub-Store Apprise 推送失败", "err", err)
-						} else {
-							e.logger.Debug("Sub-Store Apprise 推送成功")
-						}
-					}(pushConfig, title, subtitle, content)
-				}
 			}
 			return ctx.Undefined()
 		}))

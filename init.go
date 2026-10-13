@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	_ "net/http/pprof"
@@ -19,10 +20,7 @@ import (
 	"github.com/sinspired/subs-check-pro/v3/app"
 )
 
-var (
-	Version       = "dev"
-	CurrentCommit = "unknown"
-)
+var Version = "26.10.7"
 
 func init() {
 	// 设置依赖库日志级别
@@ -35,9 +33,9 @@ func init() {
 	// 1. 初始化基础的文件日志 (此时底层已经执行过 SetDefault 纯文件输出了)
 	fileHandler, err := app.InitLoggerFile()
 
-	// 2. CLI 需要额外的带颜色的终端输出
+	// 2. CLI 需要额外的带颜色的终端输出（写入前清行，避免与进度条粘连）
 	logLevel := app.GetLogLevel()
-	consoleHandler := tint.NewTextHandler(os.Stdout, &tint.Options{
+	consoleHandler := tint.NewTextHandler(&lineClearWriter{w: getStdout()}, &tint.Options{
 		Level:      logLevel,
 		TimeFormat: "01-02 15:04:05",
 	})
@@ -62,9 +60,6 @@ func init() {
 	fmt.Println("⚠️  重要提示：")
 	fmt.Println("1. 本项目完全开源免费，请勿相信任何收费版本")
 	fmt.Println("2. 本项目仅供学习交流，请勿用于非法用途")
-	fmt.Println("3. 项目地址：https://github.com/sinspired/subs-check-pro")
-	fmt.Println("4. 镜像地址：ghcr.io/sinspired/subs-check-pro:latest")
-	fmt.Println("5. 客户端：https://github.com/sinspired/subs-free")
 	fmt.Println("==================================================")
 
 	if strings.ToLower(os.Getenv("SUB_CHECK_PPROF")) != "" {
@@ -78,20 +73,23 @@ func init() {
 	}
 }
 
-func getLogLevel() slog.Level {
-	levelStr := strings.ToLower(os.Getenv("LOG_LEVEL")) // 读取环境变量
-	switch levelStr {
-	case "debug":
-		return slog.LevelDebug
-	case "info":
-		return slog.LevelInfo
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo // 默认 INFO 级别
+// lineClearWriter 在每次写入日志前先回车并清除当前行，
+// 避免日志与进度条输出混在同一行（保证日志从行首开始）。
+type lineClearWriter struct {
+	w io.Writer
+}
+
+func (lw *lineClearWriter) Write(p []byte) (int, error) {
+	prefix := []byte("\r\x1b[K")
+	buf := make([]byte, 0, len(prefix)+len(p))
+	buf = append(buf, prefix...)
+	buf = append(buf, p...)
+
+	n, err := lw.w.Write(buf)
+	if n <= len(prefix) {
+		return 0, err
 	}
+	return n - len(prefix), err
 }
 
 // 多输出处理器 - 简化版本

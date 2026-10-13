@@ -27,10 +27,6 @@ import (
 	"github.com/sinspired/subs-check-pro/v3/utils"
 )
 
-type SubUrls struct {
-	SubUrls []string `yaml:"sub-urls" json:"sub-urls"`
-}
-
 // SubStat 记录订阅链接的总数和成功数
 type SubStat struct {
 	Total   int
@@ -112,12 +108,12 @@ func logSubscriptionStats(total, local, remote, history int) {
 
 	slog.Info("订阅数量", args...)
 
-	if len(config.GlobalConfig.NodeType) > 0 {
-		val := "[" + strings.Join(config.GlobalConfig.NodeType, ",") + "]"
+	if len(config.Get().NodeType) > 0 {
+		val := "[" + strings.Join(config.Get().NodeType, ",") + "]"
 		slog.Info("代理协议筛选", slog.String("Type", val))
 	}
-	if len(config.GlobalConfig.NodeLoc) > 0 {
-		val := "[" + strings.Join(config.GlobalConfig.NodeLoc, ",") + "]"
+	if len(config.Get().NodeLoc) > 0 {
+		val := "[" + strings.Join(config.Get().NodeLoc, ",") + "]"
 		slog.Info("地理位置筛选", slog.String("Location", val))
 	}
 }
@@ -218,18 +214,20 @@ func getErrorReason(err error) string {
 // 订阅较多时堆会按默认 GOGC=100 且无上限地膨胀。
 func initMemory() (restore func()) {
 	// 内存防护：避免长时间大并发拉取把内存占满，触发 OOM Kill / 系统卡顿。
+	// 设置对**整个进程**生效（不恢复旧值）：旧实现用 defer 在函数返回瞬间
+	// 就把 GOGC/GOMEMLIMIT 还原回去，配置项形同虚设。
 	//
 	// GCPercent：日常情况下的内存/CPU 取舍旋钮，不是防 OOM 的主力。
 	gcPercent := 70
-	if config.GlobalConfig.GCPercent != 0 {
-		gcPercent = config.GlobalConfig.GCPercent
+	if config.Get().GCPercent != 0 {
+		gcPercent = config.Get().GCPercent
 	}
 	prevGC := debug.SetGCPercent(gcPercent)
 	restore = func() { debug.SetGCPercent(prevGC) }
 
 	// MemoryLimitMB（GOMEMLIMIT）：防 OOM 的硬指标。优先级见 utils.ResolveMemoryLimit：
 	// 用户配置 > Docker 下的 GOMEMLIMIT/cgroup > 普通主机物理内存探测。
-	if limit := utils.ResolveMemoryLimit(config.GlobalConfig.MemoryLimitMB, 0.75); limit > 0 {
+	if limit := utils.ResolveMemoryLimit(config.Get().MemoryLimitMB, 0.75); limit > 0 {
 		prevMemLimit := debug.SetMemoryLimit(limit)
 		restore = func() {
 			debug.SetGCPercent(prevGC)
@@ -278,6 +276,9 @@ type stageLimiter struct {
 
 // GetProxies 主入口：获取、解析、去重及统计代理节点
 func GetProxies(progressCallback func(stepName string, done, total, available int)) ([]map[string]any, int, int, int, error) {
+	// 内存防护（GOGC/GOMEMLIMIT）在入口一次性生效，作用于整个拉取+解析周期
+	initMemory()
+
 	// 每次进入先清空上次的连接池
 	ClearCache()
 
@@ -301,19 +302,19 @@ func GetProxies(progressCallback func(stepName string, done, total, available in
 	// 留给两类场景：① 无法/不想设置内存上限的环境；② 监控工具只看进程
 	// RSS（不看 Go runtime 内部统计），需要更主动地把空闲内存还给 OS。
 	// 0 = 关闭。
-	gcInterval := max(config.GlobalConfig.SubsDedupeBatch, 0)
+	gcInterval := max(config.Get().SubsDedupeBatch, 0)
 
 	// 32 位系统：强制保守并发，避免虚拟内存耗尽
 	is32Bit := ^uint(0)>>32 == 0
 	maxConcurrency := 50
 	if is32Bit {
-		maxConcurrency = min(10, config.GlobalConfig.Concurrent)
+		maxConcurrency = min(10, config.Get().Concurrent)
 		slog.Warn("32 位程序强制保守拉取订阅", "并发", maxConcurrency)
 		slog.Warn("建议使用 x64 位程序释放最佳性能！")
 		debug.SetGCPercent(20)
 	}
 	// 至少 1：Concurrent 未配置(0)时，无缓冲的信号量会让下面的发送永久阻塞
-	concurrency := max(1, min(config.GlobalConfig.Concurrent, maxConcurrency))
+	concurrency := max(1, min(config.Get().Concurrent, maxConcurrency))
 
 	// 拉取阶段并发：纯网络等待，开到解析并发的 2 倍（上限 100），让死链/慢链接并行消耗超时；
 	// 32 位程序保持保守，与解析并发一致。
@@ -330,7 +331,7 @@ func GetProxies(progressCallback func(stepName string, done, total, available in
 
 	// chanBuf × batchSize ≈ 100K
 	// batchSize=1000, chanBuf=50 → channel 中最多积压 50K 个节点
-	batchSize := config.GlobalConfig.SubsParseBatch
+	batchSize := config.Get().SubsParseBatch
 	if batchSize <= 0 {
 		batchSize = defaultParseBatchSize // 1000
 	}
@@ -401,8 +402,8 @@ func GetProxies(progressCallback func(stepName string, done, total, available in
 
 	// 生产者：并发拉取并解析订阅
 	var wg sync.WaitGroup
-	listenPort := strings.TrimPrefix(config.GlobalConfig.ListenPort, ":")
-	subStorePort := strings.TrimPrefix(config.GlobalConfig.SubStorePort, ":")
+	listenPort := strings.TrimPrefix(config.Get().ListenPort, ":")
+	subStorePort := strings.TrimPrefix(config.Get().SubStorePort, ":")
 
 	var fetchedCount atomic.Int32
 	var validSubsCount atomic.Int32
@@ -486,71 +487,101 @@ func GetProxies(progressCallback func(stepName string, done, total, available in
 
 // resolveSubUrls 合并本地与远程订阅清单并去重
 func resolveSubUrls(progressCallback func(stepName string, done, total, available int)) ([]string, int, int, int) {
+	// initMemory 已上移到 GetProxies 入口（原先藏在 resolveSubUrls 里且 defer 立即还原）
+
 	var localNum, remoteNum, historyNum int
-	localNum = len(config.GlobalConfig.SubUrls)
+	localNum = len(config.Get().SubUrls)
 
 	// 每轮检测重新统计远程订阅清单
 	resetRemoteStats()
 
-	urls := make([]string, 0, len(config.GlobalConfig.SubUrls))
-	urls = append(urls, config.GlobalConfig.SubUrls...)
+	urls := make([]string, 0, len(config.Get().SubUrls))
+	urls = append(urls, config.Get().SubUrls...)
 
-	if len(config.GlobalConfig.SubUrlsRemote) != 0 {
-		slog.Info("拉取远程订阅")
+	if len(config.Get().SubUrlsRemote) != 0 {
+		slog.Info("拉取远程订阅列表")
+		remoteListURLs := config.Get().SubUrlsRemote
 		if progressCallback != nil {
-			progressCallback("拉取远程订阅", 0, len(config.GlobalConfig.SubUrlsRemote), 0)
+			progressCallback("拉取远程订阅列表", 0, len(remoteListURLs), 0)
 		}
-		var fetched int
-		var valid int
-		for _, subURLRemote := range config.GlobalConfig.SubUrlsRemote {
-			// 保留配置中的原始地址作为统计 key，前端按配置地址匹配
-			cfgRemoteURL := strings.TrimSpace(subURLRemote)
-			// 处理为标准的raw地址
-			subURLRemote = utils.NormalizeGitHubRawURL(subURLRemote)
-			warped := utils.WarpURL(subURLRemote, utils.IsGhProxyAvailable)
-			if remote, err := fetchRemoteSubUrls(warped); err != nil {
-				if !errors.Is(err, ErrIgnore) {
-					logFatal(err, subURLRemote)
-					recordRemoteStat(RemoteStat{URL: cfgRemoteURL, ErrMsg: getErrorReason(err)})
-				} else {
-					// ErrIgnore：日期占位符链接今日/昨日均不可用，不打日志但报告里要有原因
-					recordRemoteStat(RemoteStat{URL: cfgRemoteURL, ErrMsg: "日期占位符链接今日/昨日均不可用"})
+
+		// 并发拉取 + 按下标聚合保序（旧实现串行，列表里几个死链就会把整轮
+		// 拖到逐个超时）。并发上限压到 4：清单通常指向同一宿主，
+		// 全并发容易触发对列表站点的限流（旧代码曾靠间隔 1s 规避）。
+		type listOutcome struct {
+			url  string
+			list []string
+			err  error
+		}
+		outcomes := make([]listOutcome, len(remoteListURLs))
+		sem := make(chan struct{}, min(max(config.Get().Concurrent, 1), 4))
+		var wg sync.WaitGroup
+		for i, listURL := range remoteListURLs {
+			wg.Add(1)
+			go func(idx int, rawURL string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				origURL := rawURL
+				rawURL = utils.NormalizeGitHubRawURL(rawURL)
+				warped := utils.WarpURL(rawURL, utils.IsGhProxyAvailable)
+				list, err := fetchRemoteSubUrls(warped)
+				if err != nil {
+					outcomes[idx] = listOutcome{url: origURL, err: err}
+					return
 				}
-			} else {
+				outcomes[idx] = listOutcome{url: origURL, list: list}
+			}(i, listURL)
+		}
+		wg.Wait()
+
+		fetched := 0
+		valid := 0
+		for _, oc := range outcomes {
+			fetched++
+			switch {
+			case oc.err != nil && !errors.Is(oc.err, ErrIgnore):
+				logFatal(oc.err, oc.url)
+				recordRemoteStat(RemoteStat{URL: oc.url, ErrMsg: getErrorReason(oc.err)})
+			case oc.err != nil && errors.Is(oc.err, ErrIgnore):
+				// ErrIgnore：日期占位符链接今日/昨日均不可用，不打日志但报告里要有原因
+				recordRemoteStat(RemoteStat{URL: oc.url, ErrMsg: "日期占位符链接今日/昨日均不可用"})
+			case oc.err == nil && oc.list != nil:
 				valid++
-				remoteNum += len(remote)
-				urls = append(urls, remote...)
+				remoteNum += len(oc.list)
+				urls = append(urls, oc.list...)
 
 				// 记录归属关系：过滤规则与下方去重保持一致（空行、# 开头的忽略）
-				listed := make([]string, 0, len(remote))
-				for _, r := range remote {
+				listed := make([]string, 0, len(oc.list))
+				for _, r := range oc.list {
 					r = strings.TrimSpace(r)
 					if r == "" || strings.HasPrefix(r, "#") {
 						continue
 					}
 					listed = append(listed, r)
 				}
-				st := RemoteStat{URL: cfgRemoteURL, Count: len(listed), URLs: listed}
+				st := RemoteStat{URL: oc.url, Count: len(listed), URLs: listed}
 				if len(listed) == 0 {
 					st.ErrMsg = "未解析到任何订阅链接"
 				}
 				recordRemoteStat(st)
 			}
-			fetched++
+			// ErrIgnore（占位符订阅）与其他失败一样只计入 fetched 不计 valid
 			if progressCallback != nil {
-				progressCallback("拉取远程订阅", fetched, len(config.GlobalConfig.SubUrlsRemote), valid)
+				progressCallback("拉取远程订阅", fetched, len(remoteListURLs), valid)
 			}
 		}
 	} else {
 		slog.Info("拉取订阅列表")
 	}
 
-	requiredListenPort := strings.TrimSpace(strings.TrimPrefix(config.GlobalConfig.ListenPort, ":"))
+	requiredListenPort := strings.TrimSpace(strings.TrimPrefix(config.Get().ListenPort, ":"))
 	localLastResultURL := "http://127.0.0.1:" + requiredListenPort + "/all.yaml"
 	localHistoryResultURL := "http://127.0.0.1:" + requiredListenPort + "/history.yaml"
 
-	if config.GlobalConfig.UseLastResult ||
-		config.GlobalConfig.UseHistoryResult {
+	if config.Get().UseLastResult ||
+		config.Get().UseHistoryResult {
 
 		saver, err := method.NewLocalSaver()
 		if err == nil {
@@ -563,7 +594,7 @@ func resolveSubUrls(progressCallback func(stepName string, done, total, availabl
 				)
 			}
 
-			if config.GlobalConfig.UseLastResult {
+			if config.Get().UseLastResult {
 				urls = appendLocalResult(
 					urls,
 					filepath.Join(saver.OutputPath, "all.yaml"),
@@ -573,7 +604,7 @@ func resolveSubUrls(progressCallback func(stepName string, done, total, availabl
 				)
 			}
 
-			if config.GlobalConfig.UseHistoryResult {
+			if config.Get().UseHistoryResult {
 				urls = appendLocalResult(
 					urls,
 					filepath.Join(saver.OutputPath, "history.yaml"),
@@ -601,12 +632,12 @@ func resolveSubUrls(progressCallback func(stepName string, done, total, availabl
 
 			switch key {
 			case localLastResultURL:
-				if !config.GlobalConfig.UseLastResult {
+				if !config.Get().UseLastResult {
 					continue
 				}
 
 			case localHistoryResultURL:
-				if !config.GlobalConfig.UseHistoryResult {
+				if !config.Get().UseHistoryResult {
 					continue
 				}
 			}
@@ -647,23 +678,29 @@ func fetchRemoteSubUrls(listURL string) ([]string, error) {
 		return nil, err
 	}
 
-	// 1) 优先尝试解析为对象形式 (sub-urls: [...])
-	var obj SubUrls
-	if err := yaml.Unmarshal(data, &obj); err == nil && len(obj.SubUrls) > 0 {
-		return obj.SubUrls, nil
-	}
-
-	// 2) 尝试解析为数组形式 ([...])
-	var arr []string
-	if err := yaml.Unmarshal(data, &arr); err == nil && len(arr) > 0 {
-		return arr, nil
-	}
-
-	// 2.5) 解析为通用 map，尝试从 Clash/Mihomo 配置中提取 proxy-providers.*.url
-	var generic map[string]any
-	if err := yaml.Unmarshal(data, &generic); err == nil && len(generic) > 0 {
-		if urls := parse.ExtractClashProviderURLs(generic); len(urls) > 0 {
-			return urls, nil
+	// 单次 YAML 解析 + 类型分派：旧实现对整份文档连做三次 Unmarshal
+	//（sub-urls 对象 / 纯数组 / 泛型 map），大清单等于整份多解析两遍。
+	var doc any
+	if err := yaml.Unmarshal(data, &doc); err == nil {
+		switch v := doc.(type) {
+		case map[string]any:
+			// 1) 对象形式 (sub-urls: [...])
+			if raw, ok := v["sub-urls"]; ok {
+				if list, ok := anyAllStrings(raw); ok && len(list) > 0 {
+					return list, nil
+				}
+			}
+			// 2) Clash/Mihomo 配置：proxy-providers.*.url
+			if len(v) > 0 {
+				if urls := parse.ExtractClashProviderURLs(v); len(urls) > 0 {
+					return urls, nil
+				}
+			}
+		case []any:
+			// 数组形式 ([...])
+			if list, ok := anyAllStrings(v); ok && len(list) > 0 {
+				return list, nil
+			}
 		}
 	}
 
@@ -698,6 +735,24 @@ func fetchRemoteSubUrls(listURL string) ([]string, error) {
 		return nil, err
 	}
 	return res, nil
+}
+
+// anyAllStrings 当 v 为全字符串数组时返回切片；含非字符串元素则视为不匹配
+// （与旧实现 yaml.Unmarshal 到 []string 失败的语义一致）
+func anyAllStrings(v any) ([]string, bool) {
+	list, ok := v.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		s, ok := item.(string)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, s)
+	}
+	return out, true
 }
 
 // defaultParseBatchSize 默认每批次节点数。
@@ -793,7 +848,7 @@ func processSubscription(
 	// 注意：这只是「同一订阅内」的去重；跨订阅去重由消费者侧全局 map 负责。
 	seenInSub := make(map[string]struct{}, 256)
 
-	filterTypes := config.GlobalConfig.NodeType
+	filterTypes := config.Get().NodeType
 
 	// handle 既用作 ParseSubscriptionDataStream 的 yield 回调，也用于处理兜底正则提取出的节点
 	handle := func(node map[string]any) bool {
@@ -963,7 +1018,7 @@ func saveStats(subStats map[string]SubStat) {
 
 	if len(subStats) < uniqueSubsCount {
 		validSB.WriteString("\n# 已剔除以下失效订阅链接：\n")
-		for _, u := range config.GlobalConfig.SubUrls {
+		for _, u := range config.Get().SubUrls {
 			if _, ok := subStats[u]; !ok {
 				fmt.Fprintf(&validSB, "# - %q\n", u)
 			}
@@ -982,8 +1037,6 @@ func cleanMetadata(p map[string]any) {
 	delete(p, "sub_was_succeed")
 	delete(p, "sub_from_history")
 	// 清理注入用来优化和排序的临时键值
-	delete(p, "_node_key")
-	delete(p, "_temp_keep_level")
 	utils.DeleteNodeKey(p)
 }
 

@@ -75,8 +75,8 @@ var (
 
 // currentMaxSubscriptionBytes 直接从全局配置中读取文件大小限制
 func currentMaxSubscriptionBytes() int64 {
-	if config.GlobalConfig != nil && config.GlobalConfig.SubUrlMaxSizeMB > 0 {
-		return int64(config.GlobalConfig.SubUrlMaxSizeMB) << 20
+	if cfg := config.Get(); cfg.SubUrlMaxSizeMB > 0 {
+		return int64(cfg.SubUrlMaxSizeMB) << 20
 	}
 	// 兜底安全值：如果配置未正常初始化，则默认使用 50MB
 	return 50 << 20
@@ -307,7 +307,7 @@ func FetchSubsData(rawURL string) ([]byte, error) {
 
 	slog.Debug("正在下载订阅", "URL", rawURL)
 
-	conf := config.GlobalConfig
+	conf := config.Get()
 	maxRetries := max(1, conf.SubUrlsReTry)
 	timeout := max(10, conf.SubUrlsTimeout)
 
@@ -326,8 +326,10 @@ func FetchSubsData(rawURL string) ([]byte, error) {
 	if utils.IsLocalURL(rawURL) {
 		strategies = append(strategies, strategy{useProxy: false, urlFunc: warpFunc})
 	} else {
-		if utils.IsSysProxyAvailable && strings.TrimSpace(config.GlobalConfig.SystemProxy) != "" {
-			strategies = append(strategies, strategy{useProxy: true, urlFunc: originFunc})
+		// 1. 系统代理 (External utils)：必须真有代理地址，
+		// 否则 useProxy=true 会退化成 direct 客户端，与策略 3 重复再拉一次
+		if utils.IsSysProxyAvailable && conf.SystemProxy != "" {
+			strategies = append(strategies, strategy{true, originFunc})
 		}
 		if utils.IsGhProxyAvailable {
 			strategies = append(strategies, strategy{useProxy: false, urlFunc: warpFunc})
@@ -429,6 +431,12 @@ func FetchSubsData(rawURL string) ([]byte, error) {
 		// 日期占位符的语义是尝试今天和昨天，不再额外重复整轮请求。
 		// ErrIgnore 假定声明于包中其它文件，若非如此请自补定义
 		if hasPlaceholder {
+			// 占位符 URL 的“今天/昨天”候选可能合法 404，按 ErrIgnore 语义不重试、
+			// 不触发 logFatal——但真实错误必须留痕，否则整类订阅失败完全静默
+			if lastErr != nil {
+				slog.Warn("占位符订阅拉取失败，按占位符语义忽略（不重试、不视为致命错误）",
+					"url", rawURL, "error", lastErr)
+			}
 			return nil, ErrIgnore
 		}
 
@@ -526,9 +534,11 @@ func getClient(proxyAddr string) *http.Client {
 		return v.(*http.Client)
 	}
 
-	// 创建新的 Transport
+	// 创建新的 Transport。
+	// 不要再加 TLSClientConfig 字段：只要显式设置 TLSClientConfig（哪怕值是
+	// 零值 InsecureSkipVerify:false），Go 就会把 ForceAttemptHTTP2 重置为 false，
+	// 订阅源的 HTTP/2 会被静默降级到 HTTP/1.1
 	transport := &http.Transport{
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 		MaxIdleConns:        100,              // 全局最大空闲连接
 		MaxIdleConnsPerHost: 20,               // 每个 Host 最大空闲连接
 		IdleConnTimeout:     90 * time.Second, // 空闲超时
@@ -552,11 +562,10 @@ func getClient(proxyAddr string) *http.Client {
 		transport.Proxy = nil
 	}
 
-	// 请求级 context 负责超时。这里不能设置固定的 Client.Timeout，
-	// 否则配置超过 60 秒时仍会被隐藏上限截断。
+	// 创建 Client：不设客户端层超时，截止时间完全由 fetchOnce 的 ctx
+	// （sub-urls-timeout）控制——旧的硬编码 60s 会静默截断 sub-urls-timeout > 60 的配置
 	newClient := &http.Client{
 		Transport: transport,
-		Timeout:   0,
 	}
 
 	// LoadOrStore 保证并发安全：如果其他协程已经创建了，就用它的，否则用我的
@@ -573,23 +582,8 @@ func fetchOnce(target string, useProxy bool, timeoutSec int, ua string) ([]byte,
 	// 1. 确定 Client Key
 	proxyKey := "direct"
 	if useProxy {
-		proxyKey = strings.TrimSpace(config.GlobalConfig.SystemProxy)
-		if proxyKey == "" {
-			return nil, &fetchFailure{
-				err:   errors.New("系统代理地址为空"),
-				class: failPermanent,
-			}
-		}
-
-		proxyURL, err := url.Parse(proxyKey)
-		if err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {
-			if err == nil {
-				err = errors.New("代理 URL 缺少协议或主机名")
-			}
-			return nil, &fetchFailure{
-				err:   fmt.Errorf("系统代理地址无效: %w", err),
-				class: failPermanent,
-			}
+		if p := config.Get().SystemProxy; p != "" {
+			proxyKey = p // 使用代理地址作为 Key
 		}
 	}
 
@@ -636,13 +630,12 @@ func fetchOnce(target string, useProxy bool, timeoutSec int, ua string) ([]byte,
 			req.Header.Set("Accept", "*/*")
 		}
 		// GitHub 域名：使用 Token 提升速率限制 (未认证 60次/h → 认证 5000次/h)
-		utils.InjectGitHubToken(req, config.GlobalConfig.GithubToken)
+		utils.InjectGitHubToken(req, config.Get().GithubToken)
 	}
 
 	// 4.2 处理本地请求特殊 Header
 	if isLocalRequest(req.URL) {
 		req.Header.Set("X-From-Subs-Check-pro", "true")
-		req.Header.Set("X-API-Key", config.GlobalConfig.APIKey)
 		q := req.URL.Query()
 		q.Set("from_subs_check", "true")
 		req.URL.RawQuery = q.Encode()

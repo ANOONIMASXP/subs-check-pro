@@ -34,13 +34,17 @@ func makeRequest(client httpClient, method, url string) ([]byte, error) {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+config.GlobalConfig.MihomoAPISecret)
+	req.Header.Set("Authorization", "Bearer "+config.Get().MihomoAPISecret)
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("执行请求失败: %w", err)
 	}
-	defer resp.Body.Close()
+	// 非 200 提前返回的路径也必须 drain，否则连接无法复用（且旧实现在此无超时挂死）
+	defer func() {
+		DrainBody(resp)
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusNoContent {
@@ -58,34 +62,33 @@ func makeRequest(client httpClient, method, url string) ([]byte, error) {
 }
 
 func UpdateSubs() {
-	if config.GlobalConfig.MihomoAPIURL == "" {
+	if config.Get().MihomoAPIURL == "" {
 		// slog.Warn("未配置 MihomoApiUrl，跳过更新")
 		return
 	}
 
-	version, err := getVersion(http.DefaultClient)
-	if err != nil {
-		slog.Error("获取版本失败", "error", err)
-		return
+	// 版本信息只用于日志展示：拿不到不应该中断整个更新流程
+	if version, err := getVersion(LocalHTTPClient); err == nil {
+		slog.Info("当前Mihomo版本", "version", version)
+	} else {
+		slog.Debug("获取 Mihomo 版本失败（仅影响日志展示）", "error", err)
 	}
 
-	slog.Info("当前Mihomo版本", "version", version)
-
-	names, err := getNeedUpdateNames(http.DefaultClient)
+	names, err := getNeedUpdateNames(LocalHTTPClient)
 	if err != nil {
 		slog.Error("获取需要更新的订阅失败", "error", err)
 		return
 	}
 
-	if err := updateSubs(http.DefaultClient, names); err != nil {
-		slog.Error("更新订阅失败", "error", err)
+	if err := updateSubs(LocalHTTPClient, names); err != nil {
+		slog.Error("订阅更新存在失败项", "error", err)
 		return
 	}
 	slog.Info("订阅更新完成")
 }
 
 func getVersion(client httpClient) (string, error) {
-	url := config.GlobalConfig.MihomoAPIURL + "/version"
+	url := config.Get().MihomoAPIURL + "/version"
 	body, err := makeRequest(client, http.MethodGet, url)
 	if err != nil {
 		return "", err
@@ -99,7 +102,7 @@ func getVersion(client httpClient) (string, error) {
 }
 
 func getNeedUpdateNames(client httpClient) ([]string, error) {
-	url := config.GlobalConfig.MihomoAPIURL + "/providers/proxies"
+	url := config.Get().MihomoAPIURL + "/providers/proxies"
 	body, err := makeRequest(client, http.MethodGet, url)
 	if err != nil {
 		return nil, err
@@ -120,12 +123,18 @@ func getNeedUpdateNames(client httpClient) ([]string, error) {
 }
 
 func updateSubs(client httpClient, names []string) error {
+	var failed int
 	for _, name := range names {
-		url := config.GlobalConfig.MihomoAPIURL + "/providers/proxies/" + name
+		url := config.Get().MihomoAPIURL + "/providers/proxies/" + name
 		if _, err := makeRequest(client, http.MethodPut, url); err != nil {
 			slog.Error("更新订阅失败", "name", name, "error", err)
+			failed++
+			continue
 		}
-		slog.Info("成功更新订阅:", "name", name)
+		slog.Info("成功更新订阅", "name", name)
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d/%d 个订阅更新失败", failed, len(names))
 	}
 	return nil
 }

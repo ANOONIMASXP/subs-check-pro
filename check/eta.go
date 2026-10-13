@@ -70,7 +70,7 @@ func UpdateETA() {
 	}
 
 	var remaining int64
-	limit := int64(config.GlobalConfig.SuccessLimit)
+	limit := int64(config.Get().SuccessLimit)
 	if limit > 0 {
 		got := int64(Available.Load())
 		if got >= limit {

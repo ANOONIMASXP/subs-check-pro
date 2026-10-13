@@ -1,15 +1,15 @@
-# ==============================================================================
+﻿# ==============================================================================
 # Go 应用程序跨平台编译脚本 (PowerShell) - Zig 交叉编译 (支持 QuickJS CGO)
 # ==============================================================================
 
 param(
     [string]$Version,
-    [string]$Commit,
     [switch]$Clean,
     [switch]$Debug,
     [switch]$Experiment,
     [switch]$Win,
-    [switch]$Lin
+    [switch]$Lin,
+    [switch]$Android
 )
 
 # --- 1. 配置 ---
@@ -21,6 +21,25 @@ $execName = "subs-check-pro"
 function Set-CrossCompiler($goos, $goarch) {
     # 引入 quickjs-go 后，所有平台都必须开启 CGO
     $env:CGO_ENABLED = "1"
+
+    # Android 使用 NDK 的 clang，不需要 Zig
+    if ($goos -eq "android") {
+        $ndk = $env:ANDROID_NDK_HOME
+        if (-not $ndk -and (Test-Path "C:\Android\android-ndk-r27d")) {
+            $ndk = "C:\Android\android-ndk-r27d"
+        }
+        if (-not $ndk -or -not (Test-Path $ndk)) {
+            Write-Host "❌ 未找到 Android NDK，请设置环境变量 ANDROID_NDK_HOME" -ForegroundColor Red
+            throw "Android NDK not found"
+        }
+        $api = "24"
+        if ($env:ANDROID_API) { $api = $env:ANDROID_API }
+        $tc = Join-Path $ndk "toolchains\llvm\prebuilt\windows-x86_64\bin"
+        $env:CC = "$tc\aarch64-linux-android$api-clang.cmd"
+        $env:CXX = "$tc\aarch64-linux-android$api-clang++.cmd"
+        Write-Host "🔧 启用 CGO, 使用 Android NDK clang (API $api): $env:CC" -ForegroundColor Cyan
+        return
+    }
 
     # 检查 Zig 是否存在
     if (-not (Get-Command zig -ErrorAction SilentlyContinue)) {
@@ -73,8 +92,16 @@ $targets = @(
     @{ GOOS = "darwin"; GOARCH = "arm64"; OutputFile = "$execName" }
 )
 
+# Android 目标（需要 NDK，使用 -Android 启用）
+if ($Android) {
+    $Clean = $false
+    $targets = @(
+        @{ GOOS = "android"; GOARCH = "arm64"; OutputFile = "$execName" }
+    )
+    Write-Host "🤖 仅编译 Android/arm64（需 ANDROID_NDK_HOME）" -ForegroundColor Blue
+}
 # Debug 模式
-if ($Debug) {
+elseif ($Debug) {
     $Clean = $false
 
     if ($Win -and -not $Lin) {
@@ -94,8 +121,8 @@ if ($Debug) {
     else {
         # 默认：Windows + Linux
         $targets = @(
-            @{ GOOS = "linux"; GOARCH = "amd64"; OutputFile = "$execName" },
-            @{ GOOS = "windows"; GOARCH = "amd64"; OutputFile = "$execName.exe" }
+            @{ GOOS = "windows"; GOARCH = "amd64"; OutputFile = "$execName.exe" },
+            @{ GOOS = "linux"; GOARCH = "amd64"; OutputFile = "$execName" }
         )
         Write-Host "🐞 Debug：默认 Win+Lin（单独编译用 -Win / -Lin）" -ForegroundColor Blue
     }
@@ -104,14 +131,21 @@ if ($Debug) {
 # --- 4. 开始编译 ---
 Write-Host "🚀 开始交叉编译 Go 应用程序..." -ForegroundColor Cyan
 
-if ($Version -ne "") {
-    if ($Commit -eq "") {
-        $Commit = git rev-parse --short HEAD
+# 未通过参数指定版本时，从 init.go 读取 Version
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $initFile = Join-Path $PSScriptRoot "init.go"
+    if (Test-Path $initFile) {
+        $m = Select-String -Path $initFile -Pattern '^\s*var\s+Version\s*=\s*"([^"]*)"' | Select-Object -First 1
+        if ($m) {
+            $Version = $m.Matches[0].Groups[1].Value
+            Write-Host "🎫 从 init.go 读取版本：$Version" -ForegroundColor Cyan
+        }
     }
-    Write-Host "🎫 指定编译版本：$Version-$Commit"
 }
-else {
-    Write-Host "🎫 未指定版本，默认为：dev-unknown"
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = "dev"
+    Write-Host "🎫 未指定版本，默认为：dev"
 }
 
 if (-not (Test-Path $outputDir)) {
@@ -159,16 +193,17 @@ try {
 
             $outputPath = Join-Path $platformDir $target.OutputFile
             $archiveName = "{0}_{1}_{2}" -f $execName, ($target.GOOS.Substring(0, 1).ToUpper() + $target.GOOS.Substring(1)), $archStr
-            $archiveExt = if ($target.GOOS -eq "windows") { "zip" } else { "tar.gz" }
+            $archiveExt = "tar.gz"
+            if ($target.GOOS -eq "windows") { $archiveExt = "zip" }
             $archivePath = Join-Path $outputDir "$archiveName.$archiveExt"
 
             Write-Host "  -> 编译 $platformIdentifier ..." -ForegroundColor White
 
             # 针对不同平台的 ldflags 处理
-            $ldflags = "-s -w -X main.Version=$Version -X main.CurrentCommit=$Commit"
-
-            # Apple 官方强制要求依赖系统 libSystem 动态库，禁止全静态编译
-            if ($target.GOOS -ne "darwin") {
+            $ldflags = "-s -w -X main.Version=$Version"
+            
+            # darwin 依赖系统 libSystem；android 使用 bionic，均不做全静态链接
+            if ($target.GOOS -ne "darwin" -and $target.GOOS -ne "android") {
                 $ldflags += " -extldflags '-static'"
             }
 

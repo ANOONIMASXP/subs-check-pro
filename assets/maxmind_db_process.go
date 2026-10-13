@@ -3,32 +3,18 @@ package assets
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"time"
-
-	"github.com/goccy/go-json"
+	"strings"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/oschwald/maxminddb-golang/v2"
-	"github.com/sinspired/subs-check-pro/v3/config"
 	"github.com/sinspired/subs-check-pro/v3/save/method"
-	"github.com/sinspired/subs-check-pro/v3/utils"
 )
-
-type githubRelease struct {
-	TagName string `json:"tag_name"`
-	Assets  []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-	} `json:"assets"`
-}
 
 // OpenMaxMindDB 使用指定路径或默认路径打开 MaxMind 数据库
 func OpenMaxMindDB(dbPath string) (*maxminddb.Reader, error) {
@@ -40,11 +26,9 @@ func OpenMaxMindDB(dbPath string) (*maxminddb.Reader, error) {
 		return nil, err
 	}
 
-	// 如果数据库不存在，先解压生成
-	if _, err := os.Stat(mmdbPath); os.IsNotExist(err) {
-		if err := decompressEmbeddedMMDB(mmdbPath); err != nil {
-			return nil, err
-		}
+	// 确保磁盘数据库与内嵌版本一致（内嵌更新则覆盖，缺失则解压）
+	if err := ensureGeoLite2(mmdbPath); err != nil {
+		return nil, err
 	}
 
 	return openDBWithArch(mmdbPath)
@@ -62,6 +46,50 @@ func openDBWithArch(path string) (*maxminddb.Reader, error) {
 	return db, nil
 }
 
+// ensureGeoLite2 确保磁盘上的 GeoLite2 数据库与内嵌版本一致：
+// 内嵌版本更新（或本地无版本号/数据库文件缺失）时，重新解压覆盖。
+func ensureGeoLite2(mmdbPath string) error {
+	verPath := filepath.Join(filepath.Dir(mmdbPath), "geolite2.version")
+
+	embeddedVer := strings.TrimSpace(string(EmbeddedGeoLite2Version))
+	localVer := ""
+	if b, err := os.ReadFile(verPath); err == nil {
+		localVer = strings.TrimSpace(string(b))
+	}
+
+	// 内嵌版本更新则覆盖；否则仅在数据库文件缺失时解压
+	if !geoLite2VersionNewer(embeddedVer, localVer) {
+		if _, err := os.Stat(mmdbPath); err == nil {
+			return nil
+		}
+	}
+
+	if err := decompressEmbeddedMMDB(mmdbPath); err != nil {
+		return err
+	}
+
+	if embeddedVer != "" {
+		if err := os.WriteFile(verPath, []byte(embeddedVer), 0o644); err != nil {
+			slog.Warn("写入 GeoLite2 版本号失败", "error", err)
+		} else {
+			slog.Info("GeoLite2 数据库已更新", "version", embeddedVer, "path", mmdbPath)
+		}
+	}
+	return nil
+}
+
+// geoLite2VersionNewer 判断内嵌版本是否比本地新。
+// 版本形如 YYYY.MM.DD，零填充，字典序即为时间序。
+func geoLite2VersionNewer(embedded, local string) bool {
+	if embedded == "" {
+		return false
+	}
+	if local == "" {
+		return true
+	}
+	return strings.Compare(embedded, local) > 0
+}
+
 // 解压内置的 MaxMind 数据库到指定路径
 func decompressEmbeddedMMDB(targetPath string) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
@@ -74,7 +102,7 @@ func decompressEmbeddedMMDB(targetPath string) error {
 	}
 	defer zstdDecoder.Close()
 
-	file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("maxmind数据库文件创建失败: %w", err)
 	}
@@ -135,119 +163,4 @@ func openFromBytes(path string) (*maxminddb.Reader, error) {
 		return nil, fmt.Errorf("从字节数组创建reader失败: %w", err)
 	}
 	return reader, nil
-}
-
-// UpdateGeoLite2DB 检查并更新 GeoLite2 数据库
-func UpdateGeoLite2DB() error {
-	dbPath, err := resolveDBPath()
-	if err != nil {
-		return fmt.Errorf("解析数据库路径失败: %w", err)
-	}
-
-	apiURL := "https://api.github.com/repos/mojolabs-id/GeoLite2-Database/releases/latest"
-
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	token := config.GlobalConfig.GithubToken
-
-	// GitHub 域名：使用 Token 提升速率限制 (未认证 60次/h → 认证 5000次/h)
-	utils.InjectGitHubToken(req, token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("获取 release 信息失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GitHub API 状态码: %d", resp.StatusCode)
-	}
-
-	var rel githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return fmt.Errorf("解析 release JSON 失败: %w", err)
-	}
-
-	var downloadURL string
-	isGhProxy := utils.GetGhProxy()
-	for _, asset := range rel.Assets {
-		if asset.Name == "GeoLite2-Country.mmdb" {
-			downloadURL = asset.BrowserDownloadURL
-			if isGhProxy {
-				downloadURL = config.GlobalConfig.GithubProxy + asset.BrowserDownloadURL
-			}
-			break
-		}
-	}
-	if downloadURL == "" {
-		return errors.New("未找到 GeoLite2-Country.mmdb 下载地址")
-	}
-
-	// 备份原文件
-	bakPath := dbPath + ".bak"
-	if _, err := os.Stat(dbPath); err == nil {
-		if err := os.Rename(dbPath, bakPath); err != nil {
-			return fmt.Errorf("备份原文件失败: %w", err)
-		}
-	}
-
-	// 下载（重试 3 次）
-	success := false
-	for i := range 3 {
-		if err := downloadFile(downloadURL, dbPath); err != nil {
-			fmt.Printf("下载失败 (%d/3): %v\n", i+1, err)
-			time.Sleep(1 * time.Second)
-			continue
-		}
-		success = true
-		break
-	}
-
-	if !success {
-		// 回退
-		if _, err := os.Stat(bakPath); err == nil {
-			_ = os.Rename(bakPath, dbPath)
-		}
-		return errors.New("下载失败，已回退原文件")
-	}
-
-	// 成功则删除备份
-	_ = os.Remove(bakPath)
-	slog.Info("GeoLite2-Country.mmdb 更新完成")
-	version := rel.TagName
-
-	if config.GlobalConfig.MaxMindDBUpdateNotify {
-		// 使用配置控制通知开关
-		utils.SendNotifyGeoDBUpdate(version)
-	}
-
-	return nil
-}
-
-func downloadFile(url, path string) error {
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP 状态码 %d", resp.StatusCode)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-
-	out, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, resp.Body)
-	return err
 }

@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"net/http"
 	"strings"
 )
@@ -10,11 +11,14 @@ import (
 // 分两步：
 //  1. 访问主页，检查是否重定向到国内版（cn.bing / blocked / sorry）或 403
 //  2. 主页可达时再请求 /c/api/user：200/401 = 可用，403 = API 拒绝，其他 = 部分可达
-func CheckCopilot(httpClient *http.Client) (homeOK, apiOK bool, err error) {
+func CheckCopilot(ctx context.Context, httpClient *http.Client) (homeOK, apiOK bool, err error) {
 	const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 	// 探测主页
-	req, _ := http.NewRequest("GET", "https://copilot.microsoft.com/", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://copilot.microsoft.com/", nil)
+	if err != nil {
+		return false, false, err
+	}
 	req.Header.Set("User-Agent", ua)
 
 	resp, err := httpClient.Do(req)
@@ -36,7 +40,10 @@ func CheckCopilot(httpClient *http.Client) (homeOK, apiOK bool, err error) {
 	}
 
 	// 探测 API
-	apiReq, _ := http.NewRequest("GET", "https://copilot.microsoft.com/c/api/user", nil)
+	apiReq, err := http.NewRequestWithContext(ctx, "GET", "https://copilot.microsoft.com/c/api/user", nil)
+	if err != nil {
+		return true, false, err
+	}
 	apiReq.Header.Set("User-Agent", ua)
 
 	apiResp, err := httpClient.Do(apiReq)

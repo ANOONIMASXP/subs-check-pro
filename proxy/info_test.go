@@ -28,8 +28,6 @@ func TestGetAnalyzed(t *testing.T) {
 			}
 		}()
 	}
-	// os.Setenv("SUBS-CHECK-PRO-CALL", "true")
-	// defer os.Unsetenv("SUBS-CHECK-PRO-CALL")
 	cli, err := ipinfo.New(
 		ipinfo.WithHTTPClient(&http.Client{}),
 		ipinfo.WithDBReader(db),

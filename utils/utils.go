@@ -52,7 +52,7 @@ func WarpURL(url string, isGhProxyAvailable bool) string {
 			(strings.Contains(url, "/raw/") ||
 				strings.Contains(url, "/releases/download") ||
 				strings.Contains(url, "archive"))) {
-		return config.GlobalConfig.GithubProxy + url
+		return config.Get().GithubProxy + url
 	}
 
 	return url

@@ -15,20 +15,20 @@ func TestFetchCFTrace(t *testing.T) {
 	for _, url := range CfCdnApis {
 		loc, ip := FetchCFTrace(httpClient, ctx, url)
 		if loc == "" || ip == "" {
-			t.Logf("%s GetCFProxy 失败: loc=%s, ip=%s", url, loc, ip)
+			t.Logf("%s FetchCFTrace 失败: loc=%s, ip=%s", url, loc, ip)
 		} else {
-			t.Logf("%s GetCFProxy 成功: loc=%s, ip=%s", url, loc, ip)
+			t.Logf("%s FetchCFTrace 成功: loc=%s, ip=%s", url, loc, ip)
 			success = true
 		}
 	}
 	if !success {
-		t.Error("GetCFProxy 失败: 所有 url 均未获取到 loc 和 ip")
+		t.Error("FetchCFTrace 失败: 所有 url 均未获取到 loc 和 ip")
 	}
 }
 
 func TestGetCFTrace(t *testing.T) {
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	loc, ip := GetCFTrace(httpClient)
+	loc, ip := GetCFTrace(context.Background(), httpClient)
 	if loc == "" || ip == "" {
 		t.Error("FetchCFProxy 失败: 未获取 loc 和 ip")
 	} else {
@@ -38,7 +38,7 @@ func TestGetCFTrace(t *testing.T) {
 
 func TestCheckCloudflare(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	ok, loc, ip := CheckCloudflare(client)
+	ok, loc, ip := CheckCloudflare(context.Background(), client)
 	if ok {
 		t.Log("CheckCloudflare 成功访问")
 		if loc != "" && ip != "" {

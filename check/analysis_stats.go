@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/sinspired/subs-check-pro/v3/config"
@@ -42,21 +41,16 @@ var (
 	reMediaDis = regexp.MustCompile(`(?i)D\+|Disney`)
 )
 
-// LastCheckResultStr 用于给 GUI 状态栏展示
-var LastCheckResultStr atomic.Value
-
 // AnalysisStats 统计结构
 type AnalysisStats struct {
-	Total      int
-	Types      map[string]int
-	Countries  map[string]int
-	CFIncon    map[string]int // ⁰ (不一致)
-	CFCon      map[string]int // ¹⁺ (一致)
-	CFBlock    map[string]int // ⁻¹ (proxyIP 异常)
-	NonCF      map[string]int // ² (独立VPS)
-	Media      map[string]int
-	SpeedSum   int // 速度总和
-	SpeedCount int // 参与测速数量
+	Total     int
+	Types     map[string]int
+	Countries map[string]int
+	CFIncon   map[string]int // ⁰ (不一致)
+	CFCon     map[string]int // ¹⁺ (一致)
+	CFBlock   map[string]int // ⁻¹ (proxyIP 异常)
+	NonCF     map[string]int // ² (独立VPS)
+	Media     map[string]int
 }
 
 func newAnalysisStats() *AnalysisStats {
@@ -101,12 +95,6 @@ func (pc *ProxyChecker) GenerateAnalysisReport() {
 		update := func(s *AnalysisStats) {
 			s.Total++
 			s.Types[pType]++
-
-			// 如果有速度则累计平均速度
-			if speedON && result.Speed > 0 {
-				s.SpeedSum += result.Speed
-				s.SpeedCount++
-			}
 
 			// 节点属性识别
 			hasTag := false
@@ -207,25 +195,6 @@ func (pc *ProxyChecker) GenerateAnalysisReport() {
 
 	// 终端输出总结
 	logSummary(globalAnalysis)
-
-	// 获取最终处理的节点总数 (直接复用上面报告里计算 checkCount 的逻辑)
-	checkCount := Progress.Load()
-	if config.GlobalConfig.ProgressMode == "stage" || ForceClose.Load() || Successlimited.Load() {
-		checkCount = AliveCount.Load()
-	}
-
-	// 组装要在 GUI 菜单栏展示的一行内容
-	// 例如："上次检测: 15:38 | 可用: 100/300 | 耗时: 1分30秒 | 消耗:  "
-	guiLine := fmt.Sprintf("%s丨%s丨%s · %d/%d",
-		time.Now().Format("15:04"), // 只显示 时:分 比较紧凑
-		prettyDuration(CheckDuration),
-		CheckTrafficTotal,
-		globalAnalysis.Total, // 成功可用的节点数
-		int(checkCount),      // 检测的总节点数
-	)
-
-	// 存入全局变量供 GUI 读取
-	LastCheckResultStr.Store(guiLine)
 }
 
 // saveDetailedAnalysis 输出包含总结和可视化数据的报告
@@ -244,7 +213,7 @@ func saveDetailedAnalysis(global *AnalysisStats, subs map[string]*AnalysisStats,
 	sb.WriteString("\n\n")
 
 	checkCount := Progress.Load()
-	if config.GlobalConfig.ProgressMode == "stage" || ForceClose.Load() || Successlimited.Load() {
+	if config.Get().ProgressMode == "stage" || ForceClose.Load() || Successlimited.Load() {
 		checkCount = AliveCount.Load()
 	}
 
@@ -294,17 +263,8 @@ func saveDetailedAnalysis(global *AnalysisStats, subs map[string]*AnalysisStats,
 	sb.WriteString(strconv.FormatUint(totalSubSize, 10))
 	sb.WriteString("\n")
 
-	var speedText string
-	if speedON {
-		speedText = strconv.Itoa(config.GlobalConfig.MinSpeed)
-	} else {
-		speedText = "0"
-	}
-	sb.WriteString("  check_min_speed: ")
-	sb.WriteString(speedText)
-	sb.WriteString("\n")
 	sb.WriteString("  check_success_limit: ")
-	sb.WriteString(strconv.FormatInt(int64(config.GlobalConfig.SuccessLimit), 10))
+	sb.WriteString(strconv.FormatInt(int64(config.Get().SuccessLimit), 10))
 	sb.WriteString("\n")
 	sb.WriteString("\n")
 
@@ -361,18 +321,6 @@ func saveDetailedAnalysis(global *AnalysisStats, subs map[string]*AnalysisStats,
 			sb.WriteString(", total: ")
 			sb.WriteString(strconv.Itoa(pStat.Total))
 			sb.WriteString(" }\n")
-			// 输出平均速度
-			if speedON && st.SpeedCount > 0 {
-				avgSpeed := st.SpeedSum / st.SpeedCount
-				sb.WriteString("    avg_speed: ")
-				if avgSpeed < 100 {
-					sb.WriteString(strconv.Itoa(avgSpeed))
-					sb.WriteString(" KB/s\n")
-				} else {
-					sb.WriteString(strconv.FormatFloat(float64(avgSpeed)/1024, 'f', 1, 64))
-					sb.WriteString(" MB/s\n")
-				}
-			}
 			// 输出流量
 			if pStat.Traffic > 0 {
 				sb.WriteString("    traffic: ")
@@ -502,16 +450,9 @@ func generateSummary(s *AnalysisStats) string {
 	topMedia := getTopFiltered(s.Media, []string{"Netflix", "YouTube", "Disney+", "TikTok"}, 5)
 	topAI := getTopFiltered(s.Media, []string{"GPT", "GPT+", "Gemini", "Copilot"}, 4)
 
-	var speedText string
-	if speedON {
-		speedText = "，设置速度下限 " + strconv.Itoa(config.GlobalConfig.MinSpeed) + " KB/s"
-	} else {
-		speedText = "，未开启下载测速"
-	}
-
 	return "用时 " + prettyDuration(CheckDuration) +
 		",消耗流量 " + CheckTrafficTotal +
-		", 检测到 " + prettyTotal(s.Total) + " 个可用节点" + speedText + "。" +
+		", 检测到 " + prettyTotal(s.Total) + " 个可用节点。" +
 		"覆盖 " + strconv.Itoa(len(s.Countries)) + " 个国家/地区 [Top: " + topCountry + "]; " +
 		lineFeature + " [CF 中转 " + strconv.FormatFloat(cfRatio, 'f', 1, 64) +
 		"%, VPS " + strconv.FormatFloat(vpsRatio, 'f', 1, 64) + "%]; " +
@@ -680,7 +621,7 @@ func getSum(m map[string]int) int {
 
 // checkSubsSuccessRate 将成功率筛选与协议统计整合输出
 func checkSubsSuccessRate(subs map[string]*AnalysisStats, sortedURLs []string) {
-	threshold := config.GlobalConfig.SuccessRate
+	threshold := config.Get().SuccessRate
 	var goodPart, lowPart, zeroPart strings.Builder
 
 	// 1. 遍历并分类

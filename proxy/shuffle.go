@@ -110,8 +110,10 @@ func SmartShuffleByServer(items []map[string]any, cfg ShuffleConfig) {
 
 	for pass := 0; pass < cfg.Passes; pass++ {
 		changed := false
-		// 每次 pass 重置 lastPos map，记录各 GroupKey 最近一次出现的位置
-		lastPos := make(map[string]int, n)
+		// 每次 pass 重置 lastPos map，记录各 GroupKey 最近一次出现的位置。
+		// 不再用 n 做容量提示：GroupKey 去重后的条目数远小于节点数（通常
+		// 一两个数量级），按 n 预分配只是白白占一大块桶内存
+		lastPos := make(map[string]int)
 
 		// 记录第 0 个元素的位置
 		if key := metas[0].GroupKey(); key != "" {

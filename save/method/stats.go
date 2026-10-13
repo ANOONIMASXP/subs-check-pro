@@ -24,18 +24,18 @@ func NewStatsSaver() (*StatsSaver, error) {
 	}
 
 	var outputPath string
-
 	// 获取配置文件的默认保存位置，兼容移动设备
 	defaultConfigDir := filepath.Join(utils.GetPrivateStorageDir(), "config")
+	cfg := config.Get()
 
 	switch {
-	case config.GlobalConfig.OutputDir != "":
+	case cfg.OutputDir != "":
 		// 用户在配置文件中显式设置了输出目录，直接使用
-		outputPath = config.GlobalConfig.OutputDir
-	case config.GlobalConfig.ConfigDir != "" && config.GlobalConfig.ConfigDir != defaultConfigDir:
+		outputPath = cfg.OutputDir
+	case cfg.ConfigDir != "" && cfg.ConfigDir != defaultConfigDir:
 		// 用户主动选择了非默认位置的配置文件，输出目录跟随配置文件所在目录。
 		// 默认位置（<exe>/config/）保持原有 <exe>/output/ 行为，不破坏现有部署。
-		outputPath = filepath.Join(config.GlobalConfig.ConfigDir, outputDirName)
+		outputPath = filepath.Join(cfg.ConfigDir, outputDirName)
 	default:
 		outputPath = filepath.Join(basePath, outputDirName)
 	}

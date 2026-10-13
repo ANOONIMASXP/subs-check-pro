@@ -50,7 +50,7 @@ func ParseSingBoxWithMetadata(data []byte) []map[string]any {
 
 	// 1. 清洗注释行
 	var cleanBuf bytes.Buffer
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner := newLineScanner(data)
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -61,6 +61,7 @@ func ParseSingBoxWithMetadata(data []byte) []map[string]any {
 		cleanBuf.WriteString(line)
 		cleanBuf.WriteString("\n")
 	}
+	warnScanErr(scanner, "SingBox清洗")
 
 	// 2. 解析 JSON/YAML
 	var config map[string]any
@@ -313,7 +314,7 @@ func ConvertProtocolMap(con map[string]any) []map[string]any {
 	}
 
 	// 这里 subURL 传空即可，因为协议已经在 key 中确定并拼接好了
-	nodes, _ := ParseProxyLinksAndConvert(allLinks, "") // ← 忽略 batchDeduped
+	nodes, _ := ParseProxyLinksAndConvert(allLinks, "", false) // ← 忽略 batchDeduped
 	return nodes
 }
 
@@ -322,7 +323,12 @@ func ConvertProtocolMap(con map[string]any) []map[string]any {
 // subURL 用于在猜测协议时提供上下文 (例如文件名包含 socks5)
 //
 // 返回值：(去重后的节点列表, 批次级别去重掉的节点数量)
-func ParseProxyLinksAndConvert(links []string, subURL string) ([]map[string]any, int) {
+//
+// standardCovered=true 表示调用方（stream 层）已对整份原文跑过
+// convert.ConvertsV2Ray 且成功：本函数对“未被 FixupProxyLink 改写”的标准
+// 链接直接跳过重复转换（同函数同输入，结果必然与①相同或同失败），
+// 仅保留 hy:// 修复、WG/SSR 手动分支、裸 host:port 展开与非标 Extra。
+func ParseProxyLinksAndConvert(links []string, subURL string, standardCovered bool) ([]map[string]any, int) {
 	var finalNodes []map[string]any
 	var batchLinks []string
 	var directNodes []map[string]any // 用于存放免解析直接组装的节点
@@ -378,7 +384,13 @@ func ParseProxyLinksAndConvert(links []string, subURL string) ([]map[string]any,
 				hasMieru = true
 			}
 			// 已有协议头，进行简单修复
-			batchLinks = append(batchLinks, FixupProxyLink(link))
+			fixed := FixupProxyLink(link)
+			if standardCovered && fixed == link {
+				// ①已整文件转换过该链接（Fixup 未改动 = 输入一致），
+				// 跳过重复转换；非标（mieru）由 stream 层全量 Extra 覆盖
+				continue
+			}
+			batchLinks = append(batchLinks, fixed)
 		} else {
 			// 处理纯 IP:Port 或域名:Port
 			host, port := SplitHostPortLoose(link)
@@ -605,7 +617,6 @@ func ParseSSRURI(link string) map[string]any {
 // 输入: [{"server": "...","server_port": 1234, ...}, {"type": "vmess", ...}]
 func ConvertGeneralJSONArray(list []any) []map[string]any {
 	var nodes []map[string]any
-	// convertListToNodes(list) // 删除：返回值未接收，且后续逻辑需要手动映射字段
 
 	for _, item := range list {
 		m, ok := item.(map[string]any)
@@ -665,18 +676,6 @@ func ConvertGeneralJSONArray(list []any) []map[string]any {
 	return nodes
 }
 
-func convertListToNodes(list []any) []map[string]any {
-	slog.Debug("convertListToNodes", "list", list)
-	res := make([]map[string]any, 0, len(list))
-	for _, item := range list {
-		if m, ok := item.(map[string]any); ok {
-			res = append(res, m)
-		}
-	}
-	slog.Debug("convertListToNodes", "res", res)
-	return res
-}
-
 // ExtractAndParseProxies 提取分散的 proxies: 块并解析
 func ExtractAndParseProxies(data []byte) []map[string]any {
 	// 没有 proxies: 就不可能有块，省掉整份数据的逐行扫描
@@ -684,7 +683,7 @@ func ExtractAndParseProxies(data []byte) []map[string]any {
 		return nil
 	}
 	var nodes []map[string]any
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner := newLineScanner(data)
 	var buffer bytes.Buffer
 	inBlock := false
 
@@ -743,6 +742,7 @@ func ExtractAndParseProxies(data []byte) []map[string]any {
 	if inBlock {
 		parseBuf()
 	}
+	warnScanErr(scanner, "proxies块提取")
 	return nodes
 }
 
@@ -857,6 +857,7 @@ func ParseYamlFlowList(data []byte) []map[string]any {
 		slog.Debug("使用逐行 YAML 容错解析成功", "count", len(nodes))
 	}
 
+	warnScanErr(scanner, "YamlFlow解析")
 	return nodes
 }
 
@@ -1034,20 +1035,15 @@ func ParseV2RayJSONLines(data []byte) []map[string]any {
 			nodes = append(nodes, node)
 		}
 	}
+	warnScanErr(scanner, "V2RayJSON解析")
 	return nodes
-}
-
-// ParseSurfboardProxies 解析 Surge/Surfboard 格式
-// 复用 ParseBracketKVProxies 的逻辑
-func ParseSurfboardProxies(data []byte) []map[string]any {
-	return ParseBracketKVProxies(data)
 }
 
 // ParseBracketKVProxies 解析自定义格式: [Type] Name = key=val, ...
 // 兼容 Surge / Surfboard / Quantumult X 的 [Proxy] 格式
 func ParseBracketKVProxies(data []byte) []map[string]any {
 	var nodes []map[string]any
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner := newLineScanner(data)
 	for scanner.Scan() {
 		lineBytes := scanner.Bytes()               // 使用 Bytes 避免 string 分配
 		line := string(bytes.TrimSpace(lineBytes)) // 必要的分配
@@ -1160,6 +1156,7 @@ func ParseBracketKVProxies(data []byte) []map[string]any {
 			nodes = append(nodes, node)
 		}
 	}
+	warnScanErr(scanner, "BracketKV解析")
 	return nodes
 }
 

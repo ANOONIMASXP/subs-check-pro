@@ -34,7 +34,6 @@ speed_*.csv
 *.new
 
 *.exe
-*.syso
 *.test
 .wiki/
 
@@ -43,6 +42,12 @@ speed_*.csv
 .vscode/
 
 !Subs-Check-PRO_OG.png
+
+build.txt
+
+# Kilo 计划/会话产物
+.kilo/
+
 monitor.ps1
 .gitignore
 monitor.csv
